@@ -1,0 +1,37 @@
+# AI 작업 규칙 (로컬 전용)
+CLAUDE.md
+GEMINI.md
+
+# 실제 설정값 (Private 레포에서 관리)
+config/litellm_config.yaml
+config/ray_config.yaml
+
+# 실제 운영 SOP (Private 레포에서 관리)
+.harness/sop/production/
+
+# 오케스트레이터·리뷰어 프롬프트 (절대 비공개)
+prompts/
+
+# 벤치마크 결과 데이터
+benchmarks/results/
+
+# 환경변수
+.env
+.env.*
+!.env.example
+
+# 런타임
+__pycache__/
+*.pyc
+.venv/
+node_modules/
+
+# IDE
+.idea/
+.vscode/
+*.swp
+*.swo
+
+# OS
+.DS_Store
+Thumbs.db

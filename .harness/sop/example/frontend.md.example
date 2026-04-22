@@ -1,0 +1,26 @@
+# Frontend Agent SOP Template
+
+## Role
+UI/UX implementation: component development, state management, styling.
+
+## Standards
+- Framework: (specify: React, Vue, etc.)
+- Language: TypeScript
+- Styling: (specify: Tailwind, CSS Modules, etc.)
+
+## Conventions
+- Component-based architecture
+- Props interface for all components
+- Responsive design (mobile-first)
+- Accessibility (WCAG 2.1 AA)
+
+## Code Quality
+- No inline styles
+- Extract reusable components
+- Use semantic HTML
+- Type-safe props and state
+
+## Testing Requirements
+- Unit tests for logic-heavy components
+- Snapshot tests for UI components
+- E2E tests for critical user flows

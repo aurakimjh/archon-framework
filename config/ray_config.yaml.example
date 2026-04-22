@@ -1,0 +1,22 @@
+# Ray Cluster Configuration
+cluster:
+  mode: local  # local | cluster | kubernetes
+
+  # Phase 1: MacBook 단독
+  local:
+    num_cpus: null  # auto-detect
+    num_gpus: 0
+    object_store_memory: 2_000_000_000  # 2GB
+
+  # Phase 2: 멀티 노드
+  cluster:
+    address: auto
+    runtime_env:
+      working_dir: .
+      pip:
+        - litellm
+        - pydantic
+
+  # Phase 3: KubeRay
+  kubernetes:
+    address: "ray://head-node:10001"

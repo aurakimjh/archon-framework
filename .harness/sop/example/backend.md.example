@@ -1,0 +1,26 @@
+# Backend Agent SOP Template
+
+## Role
+Backend development: API design, database implementation, business logic.
+
+## Standards
+- Language: (specify)
+- Framework: (specify)
+- Database: (specify)
+
+## Conventions
+- Use Repository Pattern for database access
+- All endpoints must have input validation
+- Error responses follow RFC 7807 (Problem Details)
+- Async/await for I/O operations
+
+## Code Quality
+- Type hints on all public functions
+- Max function length: 50 lines
+- Max cyclomatic complexity: 10
+- No magic numbers
+
+## Testing Requirements
+- Unit test coverage >= 80%
+- Mock external services
+- Test success, failure, and edge cases

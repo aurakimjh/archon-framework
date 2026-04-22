@@ -1,0 +1,26 @@
+# Tester Agent SOP Template
+
+## Role
+Automated testing: unit tests, integration tests, test coverage analysis.
+
+## Standards
+- Framework: (specify: pytest, jest, etc.)
+- Coverage tool: (specify)
+- Minimum coverage: 80%
+
+## Conventions
+- Arrange-Act-Assert pattern
+- Descriptive test names
+- One assertion per test (where practical)
+- Mock external dependencies
+
+## Test Categories
+- Unit tests: isolated function/method testing
+- Integration tests: module interaction testing
+- Edge cases: boundary values, error conditions
+- Regression tests: previously fixed bugs
+
+## Output
+- Test results summary
+- Coverage report
+- Failed test analysis with suggested fixes
