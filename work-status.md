@@ -1,6 +1,6 @@
 # Archon — Work Status
 
-> 최종 업데이트: 2026-04-22
+> 최종 업데이트: 2026-04-22 (Architecture Review 반영)
 
 ## Phase 1 — PoC (에이전트 2개가 Handoff로 코드 생성)
 
@@ -31,6 +31,22 @@
 - [x] 오케스트레이터 코어 (`src/orchestrator/orchestrator.py`)
 - [x] 설계 문서 (docs/ko, docs/en)
 - [x] CLAUDE.md / GEMINI.md (Private 레포)
+- [x] **[Review 수용]** Orchestrator 상태 머신 고도화
+  - [x] L1_REWORK 루프백 로직 (retry_count 관리, 최대 3회)
+  - [x] 3회 초과 시 L2_HUMAN 자동 에스컬레이션
+  - [x] 리뷰 플래그를 재작업 지시사항에 자동 반영
+- [x] **[Review 수용]** QA Pipeline 연동 (`src/runtime/qa.py`)
+  - [x] ruff (lint), mypy (typecheck), pytest (unit test) subprocess 실행
+  - [x] JUnit XML 파싱 → TestResults 바인딩
+  - [x] semgrep 보안 스캔 → SecurityScan 바인딩
+  - [x] pytest-cov 커버리지 측정
+  - [x] 전체 QA 병렬 실행 (asyncio.gather)
+- [x] **[Review 수용]** Auto-Commit 구현 (`src/runtime/git_executor.py`)
+  - [x] GitExecutor 클래스 — 브랜치 생성/체크아웃/커밋/푸시
+  - [x] protected_paths 검증 (ProtectedPathViolation 예외)
+  - [x] 커밋 메시지 템플릿 치환
+  - [x] force push 시도 감지
+  - [x] 테스트 6개 케이스 (`tests/test_git_executor.py`)
 
 ### 진행 중
 
@@ -44,12 +60,6 @@
 
 ### 미착수
 
-- [ ] QA 파이프라인 구현 (lint, build, test 실행)
-  - [ ] subprocess로 ruff/pytest/mypy 실행
-  - [ ] QualityGates 결과 자동 수집
-- [ ] 자동 커밋/푸시 함수
-  - [ ] `auto_commit()` — 브랜치 생성 + 커밋
-  - [ ] 커밋 메시지 템플릿 적용
 - [ ] PoC 데모 파이프라인
   - [ ] Backend Agent → Handoff Artifact 생성
   - [ ] Reviewer Agent → review_score + gate_decision
@@ -62,6 +72,11 @@
 
 ## Phase 2 — 멀티 에이전트 + 멀티 프로젝트
 
+### Architecture Review 연기 항목
+- [ ] **[Review 연기]** Async Streaming — LiteLLM 스트리밍 응답 처리 (타임아웃 방지, 실시간 모니터링)
+- [ ] **[Review 연기]** Context Compression — 대용량 Handoff Artifact 압축/요약 전달 로직
+
+### 기능 구현
 - [ ] 에이전트 풀 완성
   - [ ] FrontendAgent
   - [ ] TesterAgent
