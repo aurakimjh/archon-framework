@@ -30,6 +30,9 @@ def _make_policy(**overrides) -> QualityPolicy:
     return QualityPolicy(**defaults)
 
 
+# --- 기본 Gate 판정 ---
+
+
 def test_auto_pass():
     result = evaluate_gate(_make_quality(), _make_policy())
     assert result == GateDecision.AUTO_PASS
@@ -92,3 +95,119 @@ def test_l3_halt_agent_loop():
 def test_l4_deploy():
     result = evaluate_gate(_make_quality(), _make_policy(), is_deploy_request=True)
     assert result == GateDecision.L4_DEPLOY
+
+
+# --- Dynamic Guardrails ---
+
+
+def test_dynamic_guardrail_payment_path():
+    """결제 관련 파일 변경 시 L2 강제 상향."""
+    result = evaluate_gate(
+        _make_quality(),
+        _make_policy(),
+        changed_paths=["src/services/payment_processor.py"],
+    )
+    assert result == GateDecision.L2_HUMAN
+
+
+def test_dynamic_guardrail_auth_path():
+    """인증 관련 파일 변경 시 L2 강제 상향."""
+    result = evaluate_gate(
+        _make_quality(),
+        _make_policy(),
+        changed_paths=["src/auth/login.py"],
+    )
+    assert result == GateDecision.L2_HUMAN
+
+
+def test_dynamic_guardrail_infrastructure_path():
+    """인프라 경로 변경 시 L2 강제 상향."""
+    result = evaluate_gate(
+        _make_quality(),
+        _make_policy(),
+        changed_paths=["infrastructure/terraform/main.tf"],
+    )
+    assert result == GateDecision.L2_HUMAN
+
+
+def test_dynamic_guardrail_risk_keywords():
+    """위험 키워드가 지시사항에 포함되면 L2 강제 상향."""
+    result = evaluate_gate(
+        _make_quality(),
+        _make_policy(),
+        task_instructions="Implement payment processing with Stripe API for refund handling",
+    )
+    assert result == GateDecision.L2_HUMAN
+
+
+def test_dynamic_guardrail_delete_keyword():
+    """delete_all 키워드 → L2."""
+    result = evaluate_gate(
+        _make_quality(),
+        _make_policy(),
+        task_instructions="Run delete_all on user records older than 3 years",
+    )
+    assert result == GateDecision.L2_HUMAN
+
+
+def test_dynamic_guardrail_safe_path():
+    """일반 경로 변경은 guardrail에 걸리지 않음."""
+    result = evaluate_gate(
+        _make_quality(),
+        _make_policy(),
+        changed_paths=["src/utils/helpers.py", "tests/test_utils.py"],
+    )
+    assert result == GateDecision.AUTO_PASS
+
+
+def test_dynamic_guardrail_safe_instructions():
+    """일반 지시사항은 guardrail에 걸리지 않음."""
+    result = evaluate_gate(
+        _make_quality(),
+        _make_policy(),
+        task_instructions="Add logging to the user registration endpoint",
+    )
+    assert result == GateDecision.AUTO_PASS
+
+
+def test_dynamic_guardrail_custom_risk_paths():
+    """커스텀 위험 경로 설정."""
+    policy = _make_policy(high_risk_paths=["custom_module/"])
+    result = evaluate_gate(
+        _make_quality(),
+        policy,
+        changed_paths=["custom_module/sensitive.py"],
+    )
+    assert result == GateDecision.L2_HUMAN
+
+
+# --- SOP Compliance ---
+
+
+def test_sop_compliance_pass():
+    """SOP 점수 충족 시 통과."""
+    q = _make_quality(sop_compliance_score=85)
+    result = evaluate_gate(q, _make_policy())
+    assert result == GateDecision.AUTO_PASS
+
+
+def test_sop_compliance_fail():
+    """SOP 점수 미달 시 L2."""
+    q = _make_quality(sop_compliance_score=50)
+    result = evaluate_gate(q, _make_policy())
+    assert result == GateDecision.L2_HUMAN
+
+
+def test_sop_compliance_none_passes():
+    """SOP 미검사(None)면 통과."""
+    q = _make_quality(sop_compliance_score=None)
+    result = evaluate_gate(q, _make_policy())
+    assert result == GateDecision.AUTO_PASS
+
+
+def test_sop_compliance_custom_threshold():
+    """커스텀 SOP 임계값."""
+    q = _make_quality(sop_compliance_score=85)
+    policy = _make_policy(sop_compliance_threshold=90)
+    result = evaluate_gate(q, policy)
+    assert result == GateDecision.L2_HUMAN

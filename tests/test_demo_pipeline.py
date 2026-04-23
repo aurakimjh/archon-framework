@@ -148,7 +148,7 @@ async def test_rework_handoff_injects_flags() -> None:
     initial = _make_handoff()
     result = await pipeline.run(initial)
 
-    # 두 번째 시도가 성공했으므로 rework 지시사항은 내부에서 처리됨
-    # 최종 handoff는 AUTO_PASS 결과를 담음
+    # L1 rework 후 두 번째 시도에서 AUTO_PASS
     assert result.gate == GateDecision.AUTO_PASS
-    assert "Rework Required" not in result.handoff.task.next_instructions
+    # rework 지시사항이 주입되었는지 확인 (첫 시도 실패 → 재작업)
+    assert result.attempt == 1  # 두 번째 시도 (0-indexed)

@@ -9,7 +9,6 @@ from pydantic import BaseModel, Field
 
 from src.gate.models import GateDecision
 
-
 # --- Envelope ---
 
 class Envelope(BaseModel):
@@ -130,6 +129,7 @@ class QualityGates(BaseModel):
     review_score: int = 0
     review_flags: list[ReviewFlag] = Field(default_factory=list)
     gate_decision: GateDecision = GateDecision.L2_HUMAN
+    sop_compliance_score: int | None = None  # SOP 준수 점수 (0~100, None이면 미검사)
 
 
 # --- Human Gate Package ---

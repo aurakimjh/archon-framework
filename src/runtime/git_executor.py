@@ -4,16 +4,16 @@ from __future__ import annotations
 
 import asyncio
 import logging
-from pathlib import Path
 
+from src.errors import GitCommandError, ProtectedPathError
 from src.orchestrator.handoff import HandoffArtifact
 from src.registry.models import GitConfig
 
 logger = logging.getLogger(__name__)
 
 
-class ProtectedPathViolation(Exception):
-    """protected_paths에 포함된 파일 수정 시도."""
+# 하위 호환 별칭
+ProtectedPathViolation = ProtectedPathError
 
 
 class GitExecutor:
@@ -40,7 +40,7 @@ class GitExecutor:
         if proc.returncode != 0:
             error_msg = stderr.decode(errors="replace").strip()
             logger.error("git command failed: %s — %s", " ".join(cmd), error_msg)
-            raise RuntimeError(f"git failed: {error_msg}")
+            raise GitCommandError(command=" ".join(cmd), stderr=error_msg)
         return stdout.decode(errors="replace").strip()
 
     def validate_protected_paths(self, handoff: HandoffArtifact) -> None:
@@ -53,7 +53,7 @@ class GitExecutor:
             file_path = changed_file.path
             for protected_path in protected:
                 if file_path.startswith(protected_path) or file_path == protected_path:
-                    raise ProtectedPathViolation(
+                    raise ProtectedPathError(
                         f"Agent attempted to modify protected path: {file_path} "
                         f"(protected: {protected_path})"
                     )
@@ -106,7 +106,7 @@ class GitExecutor:
         try:
             await self._run_git("checkout", "-b", branch_name)
             logger.info("Created and checked out branch: %s", branch_name)
-        except RuntimeError:
+        except GitCommandError:
             # 브랜치가 이미 존재하면 체크아웃만
             await self._run_git("checkout", branch_name)
             logger.info("Checked out existing branch: %s", branch_name)
@@ -132,7 +132,7 @@ class GitExecutor:
         try:
             await self._run_git("push", "-u", "origin", branch_name)
             logger.info("Pushed branch: %s", branch_name)
-        except RuntimeError as e:
+        except GitCommandError as e:
             logger.warning("Push skipped (no remote?): %s", e)
 
         return commit_sha

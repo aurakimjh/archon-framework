@@ -78,6 +78,22 @@ class QualityPolicy(BaseModel):
     require_human_on_schema_change: bool = True
     require_human_on_external_integration: bool = True
     daily_token_budget: int = 500
+    sop_compliance_threshold: int = 70  # SOP 점수 이 미만이면 L2
+    # Dynamic Guardrails — 위험 키워드/경로 감지 시 L2 강제 상향
+    high_risk_paths: list[str] = Field(
+        default_factory=lambda: [
+            "payment", "billing", "auth", "security",
+            "migration", "infrastructure/", "secrets/",
+        ]
+    )
+    high_risk_keywords: list[str] = Field(
+        default_factory=lambda: [
+            "payment", "billing", "charge", "refund",
+            "credential", "secret", "token", "api_key",
+            "delete_all", "drop_table", "truncate",
+            "production", "deploy",
+        ]
+    )
 
 
 class TaskRef(BaseModel):
