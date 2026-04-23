@@ -8,7 +8,11 @@ from typing import Any
 
 from src.agents.base import BaseAgent
 from src.agents.backend import BackendAgent
+from src.agents.devops import DevOpsAgent
+from src.agents.docs import DocsAgent
+from src.agents.frontend import FrontendAgent
 from src.agents.reviewer import ReviewerAgent
+from src.agents.tester import TesterAgent
 from src.gate.evaluator import evaluate_gate
 from src.gate.models import GateDecision
 from src.memory.context_injector import MemoryStore
@@ -25,6 +29,10 @@ logger = logging.getLogger(__name__)
 # 에이전트 풀 (무상태 — 인스턴스 재사용 가능)
 AGENT_POOL: dict[str, BaseAgent] = {
     AgentRole.BACKEND: BackendAgent(),
+    AgentRole.FRONTEND: FrontendAgent(),
+    AgentRole.TESTER: TesterAgent(),
+    AgentRole.DEVOPS: DevOpsAgent(),
+    AgentRole.DOCS: DocsAgent(),
     AgentRole.REVIEWER: ReviewerAgent(),
 }
 

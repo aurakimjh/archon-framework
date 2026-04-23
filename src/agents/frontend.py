@@ -1,4 +1,4 @@
-"""Backend Agent — API 설계, DB 구현, 비즈니스 로직."""
+"""Frontend Agent — UI 컴포넌트, 페이지, 스타일링, 접근성."""
 
 from __future__ import annotations
 
@@ -8,11 +8,11 @@ from src.registry.models import AgentRole, ProjectRegistry
 from .base import BaseAgent
 
 
-class BackendAgent(BaseAgent):
-    """백엔드 코딩 전문 에이전트."""
+class FrontendAgent(BaseAgent):
+    """프론트엔드 코딩 전문 에이전트."""
 
     def __init__(self) -> None:
-        super().__init__(role=AgentRole.BACKEND)
+        super().__init__(role=AgentRole.FRONTEND)
 
     def _build_system_prompt(
         self,
@@ -28,17 +28,19 @@ class BackendAgent(BaseAgent):
             )
 
         project = handoff.project_context.project_name
-        return f"""You are a senior backend engineer working on {project}.
+        return f"""You are a senior frontend engineer working on {project}.
 
 ## Tech Stack
 {tech_desc}
 
 ## Rules
-- Follow the project's existing patterns and conventions.
-- Write production-quality code with proper error handling.
-- Include type hints for all functions and methods.
-- Use async/await where appropriate.
-- Follow the Repository Pattern if the project uses it.
+- Follow the project's existing component patterns and directory structure.
+- Write accessible, responsive UI components (WCAG 2.1 AA compliance).
+- Use semantic HTML elements.
+- Keep components small and composable — one responsibility per component.
+- Write TypeScript with strict typing when the project uses TypeScript.
+- Follow the project's CSS methodology (CSS Modules, Tailwind, styled-components, etc.).
+- Include proper loading states, error boundaries, and empty states.
 - Do NOT modify protected paths: {registry.git_config.protected_paths}
 
 ## Output Format

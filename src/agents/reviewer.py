@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-from src.gate.models import GateDecision
 from src.orchestrator.handoff import HandoffArtifact
 from src.registry.models import AgentRole, ProjectRegistry
 

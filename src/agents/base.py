@@ -4,7 +4,6 @@ from __future__ import annotations
 
 import abc
 import logging
-from typing import Any
 
 import litellm
 
@@ -12,7 +11,6 @@ from src.orchestrator.handoff import (
     Artifacts,
     Envelope,
     HandoffArtifact,
-    ProjectContext,
     QualityGates,
     Task,
 )
