@@ -1,10 +1,15 @@
-"""LLM Selector / Router — 역할별 모델 라우팅 + 복잡도 기반 동적 선택."""
+"""LLM Selector / Router — 역할별 모델 라우팅 + 복잡도 + vLLM 동적 선택."""
 
 from __future__ import annotations
+
+import logging
 
 from src.orchestrator.handoff import HandoffArtifact
 from src.registry.models import AgentRole, ProjectRegistry
 from src.router.complexity import ComplexityLevel, measure_complexity
+from src.runtime.vllm_bridge import VLLMBridge
+
+logger = logging.getLogger(__name__)
 
 # 기본 역할-모델 매핑 (LiteLLM Proxy model_name)
 ROLE_MODEL_MAP: dict[str, str] = {
@@ -58,3 +63,36 @@ def get_model_for_handoff(
         return config.high_complexity_model
 
     return config.model_override or config.model
+
+
+def get_model_with_vllm(
+    role: str,
+    handoff: HandoffArtifact,
+    registry: ProjectRegistry,
+    vllm_bridge: VLLMBridge | None = None,
+) -> tuple[str, dict | None]:
+    """vLLM 워커 가용 시 vLLM으로 라우팅, 아니면 기본 라우팅.
+
+    Returns:
+        (모델명, LiteLLM 추가 설정 dict 또는 None) 튜플.
+        vLLM 라우팅 시 api_base 등 추가 설정이 포함된다.
+    """
+    # 1. vLLM 브릿지가 없으면 기본 라우팅
+    if not vllm_bridge:
+        return get_model_for_handoff(role, handoff, registry), None
+
+    # 2. 역할에 매칭되는 healthy vLLM 엔드포인트 탐색
+    for endpoint in vllm_bridge.list_healthy():
+        if role in endpoint.tags or endpoint.name.startswith(role):
+            config = vllm_bridge.get_litellm_config(endpoint.name)
+            if config:
+                logger.info(
+                    "vLLM routing: [%s] → %s (%s)",
+                    role,
+                    endpoint.name,
+                    endpoint.base_url,
+                )
+                return config["model"], config
+
+    # 3. vLLM 매칭 없으면 기본 라우팅
+    return get_model_for_handoff(role, handoff, registry), None
