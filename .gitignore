@@ -1,6 +1,7 @@
 # AI 작업 규칙 (로컬 전용)
 CLAUDE.md
 GEMINI.md
+gemini.md
 
 # 실제 설정값 (Private 레포에서 관리)
 config/litellm_config.yaml
