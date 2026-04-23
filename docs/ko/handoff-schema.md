@@ -1,6 +1,6 @@
 # Handoff Artifact 스키마
 
-> 버전: 1.0.0 | 최종 수정: 2026-04-22
+> 버전: 1.1.0 | 최종 수정: 2026-04-23
 
 ## 개요
 
@@ -119,9 +119,13 @@ Handoff Artifact는 에이전트 간 컨텍스트를 전달하는 **표준 JSON 
   "review_flags": [
     { "severity": "medium", "category": "external_integration", "detail": "Stripe 신규 연동" }
   ],
+  "sop_compliance_score": 85,
   "gate_decision": "l2_human"
 }
 ```
+
+- `sop_compliance_score`: SOP 준수도 점수 (0~100). `null`이면 SOP 검사 스킵.
+- `gate_decision`: `auto_pass` | `l1_rework` | `l2_human` | `l3_halt` | `l4_deploy`
 
 ### human_gate_package
 
