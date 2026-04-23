@@ -110,6 +110,15 @@ class MemoryConfig(BaseModel):
     retain_handoff_count: int = 100
     auto_learn_patterns: bool = True
     cross_project_memory_enabled: bool = False
+    # L1 Redis
+    redis_url: str = "redis://localhost:6379/0"
+    redis_ttl: int = 86400  # 24시간
+    # L2 ChromaDB
+    chroma_path: str | None = None  # None이면 인메모리
+    chroma_collection_prefix: str = "archon"
+    # L3 Mem0
+    mem0_api_key: str | None = None
+    mem0_user_id: str = "archon"
 
 
 class ProjectMetrics(BaseModel):
