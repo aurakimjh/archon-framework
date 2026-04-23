@@ -8,6 +8,7 @@ import re
 import sys
 import uuid
 from pathlib import Path
+from typing import Any
 
 # Ensure project root is in sys.path so `src.*` is importable from any cwd.
 _PROJECT_ROOT = Path(__file__).parent.parent
@@ -15,20 +16,13 @@ if str(_PROJECT_ROOT) not in sys.path:
     sys.path.insert(0, str(_PROJECT_ROOT))
 
 try:
-    from src.gate.evaluator import evaluate_gate
     from src.gate.models import GateDecision
     from src.orchestrator.handoff import (
-        Artifacts,
-        ChangedFile,
         Envelope,
         HandoffArtifact,
         ProjectContext,
-        QualityGates,
-        ReviewFlag,
-        SecurityScan,
         Task,
         TechStack,
-        TestResults,
     )
     from src.registry.models import GitConfig, ProjectMeta, ProjectRegistry, QualityPolicy
 except ImportError as exc:
@@ -73,47 +67,8 @@ except ImportError:
 
 
 # ---------------------------------------------------------------------------
-# Demo scenarios
+# Display constants
 # ---------------------------------------------------------------------------
-
-_SCENARIOS: dict[str, dict] = {
-    "auto_pass": {
-        "label": "AUTO_PASS — 완벽한 코드, 자동 커밋",
-        "review_score": 92,
-        "lint": "passed",
-        "build": "passed",
-        "coverage": 88.5,
-        "unit_passed": 14,
-        "unit_failed": 0,
-        "security": SecurityScan(critical=0, high=0, medium=0, low=1),
-        "flags": [],
-    },
-    "l1": {
-        "label": "L1_REWORK — 린트 실패, BackendAgent 재작업",
-        "review_score": 78,
-        "lint": "failed",
-        "build": "passed",
-        "coverage": 82.0,
-        "unit_passed": 12,
-        "unit_failed": 0,
-        "security": SecurityScan(),
-        "flags": [ReviewFlag(severity="warning", category="style", detail="E501 line too long")],
-    },
-    "l2": {
-        "label": "L2_HUMAN — 낮은 리뷰 점수, 개발자 판단 요청",
-        "review_score": 58,
-        "lint": "passed",
-        "build": "passed",
-        "coverage": 76.0,
-        "unit_passed": 10,
-        "unit_failed": 0,
-        "security": SecurityScan(),
-        "flags": [
-            ReviewFlag(severity="error", category="design", detail="Missing error handling"),
-            ReviewFlag(severity="error", category="security", detail="Input not validated"),
-        ],
-    },
-}
 
 _GATE_ACTIONS: dict[GateDecision, str] = {
     GateDecision.AUTO_PASS: "GitExecutor.auto_commit() — 브랜치 생성 → 커밋 → 푸시",
@@ -134,6 +89,9 @@ _GATE_COLORS: dict[GateDecision, str] = {
 _OK = "[green]✓[/green]"
 _WARN = "[yellow]⚠[/yellow]"
 _FAIL = "[red]✗[/red]"
+
+# CLI에서 선택 가능한 데모 시나리오 (l1_exhausted는 테스트 전용)
+_DEMO_SCENARIOS = ["auto_pass", "l1", "l2"]
 
 
 # ---------------------------------------------------------------------------
@@ -209,9 +167,10 @@ def cmd_version(_args: argparse.Namespace) -> None:
 
 
 async def cmd_demo(args: argparse.Namespace) -> None:
+    from src.pipeline.demo_pipeline import DemoPipeline, SCENARIO_LABELS
+
     scenario_key: str = args.scenario
     force_mock: bool = args.mock
-    sc = _SCENARIOS[scenario_key]
 
     _rule()
     _panel(
@@ -221,7 +180,7 @@ async def cmd_demo(args: argparse.Namespace) -> None:
         style="bold blue",
     )
     _out()
-    _out(f"  Scenario : [bold]{sc['label']}[/bold]")
+    _out(f"  Scenario : [bold]{SCENARIO_LABELS.get(scenario_key, scenario_key)}[/bold]")
     _out()
 
     # 1/5 — Config
@@ -256,106 +215,106 @@ async def cmd_demo(args: argparse.Namespace) -> None:
         _out(f"  {_WARN} LLM 연결 실패 → [bold]Mock 모드[/bold] 폴백")
         _out("     (모델 설치 후 재실행 시 실제 LLM 사용)")
 
-    # 3/5 — BackendAgent
+    # 파이프라인 초기화
     task_id = f"demo-{uuid.uuid4().hex[:6]}"
-    handoff = _make_initial_handoff(task_id)
+    initial_handoff = _make_initial_handoff(task_id)
 
-    _rule("3 / 5  BackendAgent 실행")
+    _rule("3~5 / 5  파이프라인 실행")
     _out(f"  task_id     : [cyan]{task_id}[/cyan]")
-    _out(f"  branch      : [cyan]{handoff.project_context.git_branch}[/cyan]")
-    _out(f"  instruction : {handoff.task.next_instructions[:70]}...")
+    _out(f"  branch      : [cyan]{initial_handoff.project_context.git_branch}[/cyan]")
+    _out(f"  instruction : {initial_handoff.task.next_instructions[:70]}...")
+
+    def on_step(step: str, data: Any) -> None:
+        if step == "loop":
+            _out()
+            _rule(f"  {data}  ")
+        elif step == "backend":
+            _out(f"\n  [bold cyan]▶ Backend [/bold cyan]  {data}")
+        elif step == "backend_done":
+            d = data
+            _out(f"  {_OK} {d['summary'][:80]}")
+            if d["files"]:
+                _out(f"     files    : {', '.join(d['files'])}")
+        elif step == "qa":
+            _out(f"\n  [bold cyan]▶ QA      [/bold cyan]  {data}")
+        elif step == "qa_done":
+            d = data
+            cov_ok = d["coverage"] >= p.coverage_threshold
+            _out(f"     lint     : {_OK if d['lint'] == 'passed' else _FAIL}  {d['lint']}")
+            _out(f"     build    : {_OK if d['build'] == 'passed' else _FAIL}  {d['build']}")
+            tests_str = f"[green]{d['unit_passed']} passed[/green]"
+            if d["unit_failed"]:
+                tests_str += f"  [red]{d['unit_failed']} failed[/red]"
+            _out(f"     tests    : {tests_str}")
+            _out(
+                f"     coverage : {_OK if cov_ok else _WARN}  "
+                f"{d['coverage']:.1f}%  (threshold {p.coverage_threshold}%)"
+            )
+            sec = d["security"]
+            _out(
+                f"     security : critical={sec.critical}  "
+                f"high={sec.high}  medium={sec.medium}"
+            )
+        elif step == "reviewer":
+            _out(f"\n  [bold cyan]▶ Review  [/bold cyan]  {data}")
+        elif step == "reviewer_done":
+            d = data
+            score_ok = d["review_score"] >= p.review_score_threshold
+            _out(
+                f"     score    : {_OK if score_ok else _FAIL}  "
+                f"{d['review_score']}/100  (threshold {p.review_score_threshold})"
+            )
+            for flag in d["flags"]:
+                _out(f"     flag     : [{flag.severity}] {flag.category}: {flag.detail}")
+        elif step == "gate":
+            gate = data["decision"]
+            color = _GATE_COLORS.get(gate, "white")
+            _out(f"\n  [bold cyan]▶ Gate    [/bold cyan]  [{color}]{gate.value}[/{color}]")
+        elif step == "l1_rework":
+            _out(f"  [yellow]  ↺ L1_REWORK[/yellow]  {data}")
+        elif step in ("l2_escalated", "l2_human"):
+            _out(f"  [red]  ⊘ L2_HUMAN[/red]  {data}")
+        elif step == "l3_halt":
+            _out(f"  [bold red]  ⊗ L3_HALT[/bold red]  {data}")
+        elif step == "l4_deploy":
+            _out(f"  [blue]  ⟳ L4_DEPLOY[/blue]  {data}")
+        elif step == "commit":
+            _out(f"  [dim]  → {data}[/dim]")
+
+    pipeline = DemoPipeline(
+        registry=registry,
+        mock=not llm_ok,
+        scenario=scenario_key,
+        dry_run=True,
+        on_step=on_step,
+    )
+    result = await pipeline.run(initial_handoff)
+
+    # 최종 결과
+    _rule()
     _out()
-    _out(f"  [dim]({'실제 LLM 호출' if llm_ok else '[Mock] BackendAgent 응답 시뮬레이션'})[/dim]")
-    await asyncio.sleep(0.5)
-
-    handoff.envelope.from_agent = "backend"
-    handoff.envelope.to_agent = "reviewer"
-    handoff.task.completed_summary = (
-        "Implemented add(a, b) -> int in src/math/operations.py. "
-        "Added 14 unit tests in tests/test_math.py."
-    )
-    handoff.artifacts = Artifacts(
-        changed_files=[
-            ChangedFile(path="src/math/operations.py", change_type="added", reason="new function"),
-            ChangedFile(path="tests/test_math.py", change_type="added", reason="unit tests"),
-        ]
-    )
-    _out(f"  {_OK} {handoff.task.completed_summary}")
-    _out(f"  files       : {', '.join(f.path for f in handoff.artifacts.changed_files)}")
-
-    # 4/5 — QA + Reviewer
-    _rule("4 / 5  QA Pipeline + ReviewerAgent")
-    _out(f"  [dim]({'실제 QA 실행' if llm_ok else '[Mock] QA 결과 시뮬레이션'})[/dim]")
-    await asyncio.sleep(0.4)
-
-    handoff.quality_gates = QualityGates(
-        test_results=TestResults(
-            unit_passed=sc["unit_passed"],
-            unit_failed=sc["unit_failed"],
-            coverage_percent=sc["coverage"],
-        ),
-        lint_result=sc["lint"],
-        build_result=sc["build"],
-        security_scan=sc["security"],
-        review_score=sc["review_score"],
-        review_flags=sc["flags"],
-    )
-    qg = handoff.quality_gates
-
-    cov_ok = qg.test_results.coverage_percent >= p.coverage_threshold
-    score_ok = qg.review_score >= p.review_score_threshold
-
+    color = _GATE_COLORS.get(result.gate, "white")
+    _out(f"  gate        : [{color}]{result.gate.value}[/{color}]")
+    _out(f"  attempt     : {result.attempt + 1}회")
+    _out(f"  action      : {_GATE_ACTIONS.get(result.gate, '')}")
     _out()
-    _out(f"  lint        : {_OK if qg.lint_result == 'passed' else _FAIL}  {qg.lint_result}")
-    _out(f"  build       : {_OK if qg.build_result == 'passed' else _FAIL}  {qg.build_result}")
-    _out(
-        f"  tests       : [green]{qg.test_results.unit_passed} passed[/green]"
-        + (f"  [red]{qg.test_results.unit_failed} failed[/red]" if qg.test_results.unit_failed else "")
-    )
-    _out(
-        f"  coverage    : {_OK if cov_ok else _WARN}  "
-        f"{qg.test_results.coverage_percent:.1f}%  (threshold {p.coverage_threshold}%)"
-    )
-    _out(
-        f"  review      : {_OK if score_ok else _FAIL}  "
-        f"{qg.review_score}/100  (threshold {p.review_score_threshold})"
-    )
-    _out(
-        f"  security    : critical={qg.security_scan.critical}  "
-        f"high={qg.security_scan.high}  medium={qg.security_scan.medium}"
-    )
-    if qg.review_flags:
-        _out()
-        _out("  [yellow]Review Flags:[/yellow]")
-        for flag in qg.review_flags:
-            _out(f"    [{flag.severity}] {flag.category}: {flag.detail}")
-
-    # 5/5 — Gate
-    _rule("5 / 5  Human Gate 판정")
-    decision = evaluate_gate(qg, p, retry_count=handoff.envelope.retry_count)
-    handoff.quality_gates.gate_decision = decision
-
-    color = _GATE_COLORS.get(decision, "white")
-    action = _GATE_ACTIONS.get(decision, "")
-
-    _out()
-    _out(f"  gate        : [{color}]{decision.value}[/{color}]")
-    _out(f"  action      : {action}")
-    _out()
-
-    if decision == GateDecision.AUTO_PASS:
-        _out("  [dim](Demo: dry-run — 실제 환경에서는 GitExecutor가 브랜치 생성/커밋/푸시 실행)[/dim]")
-    elif decision == GateDecision.L1_REWORK:
+    if result.gate == GateDecision.AUTO_PASS:
         _out(
-            "  [dim](실제 환경: review_flags를 next_instructions에 주입 → "
-            "BackendAgent 재호출, 최대 3회)[/dim]"
+            "  [dim](Demo: dry-run — 실제 환경에서는 "
+            "GitExecutor가 브랜치 생성/커밋/푸시 실행)[/dim]"
         )
-    elif decision in (GateDecision.L2_HUMAN, GateDecision.L3_HALT):
-        _out("  [dim](실제 환경: 터미널 알림 + 프로젝트 일시정지 → 개발자 판단 대기)[/dim]")
+    elif result.gate in (GateDecision.L2_HUMAN, GateDecision.L3_HALT):
+        _out(
+            "  [dim](실제 환경: 터미널 알림 + 프로젝트 일시정지 "
+            "→ 개발자 판단 대기)[/dim]"
+        )
 
     _rule()
     _out()
-    _out(f"[bold]Demo 완료.[/bold]  handoff_id: [dim]{handoff.envelope.handoff_id}[/dim]")
+    _out(
+        f"[bold]Demo 완료.[/bold]  "
+        f"handoff_id: [dim]{result.handoff.envelope.handoff_id}[/dim]"
+    )
     _out()
     _out("다른 시나리오:")
     _out("  python -m archon demo --scenario auto_pass")
@@ -379,9 +338,9 @@ def main() -> None:
     demo_p.add_argument("--mock", action="store_true", help="LLM 없이 Mock 모드 강제")
     demo_p.add_argument(
         "--scenario",
-        choices=list(_SCENARIOS),
+        choices=_DEMO_SCENARIOS,
         default="auto_pass",
-        metavar="{" + ",".join(_SCENARIOS) + "}",
+        metavar="{" + ",".join(_DEMO_SCENARIOS) + "}",
         help="데모 시나리오 (기본: auto_pass)",
     )
 
