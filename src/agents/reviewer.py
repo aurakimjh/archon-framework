@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from src.mcp.a2a import A2ARouter
 from src.orchestrator.handoff import HandoffArtifact
 from src.registry.models import AgentRole, ProjectRegistry
 
@@ -11,8 +12,8 @@ from .base import BaseAgent
 class ReviewerAgent(BaseAgent):
     """코드 리뷰 전문 에이전트. Claude Sonnet 사용."""
 
-    def __init__(self) -> None:
-        super().__init__(role=AgentRole.REVIEWER)
+    def __init__(self, a2a_router: A2ARouter | None = None) -> None:
+        super().__init__(role=AgentRole.REVIEWER, a2a_router=a2a_router)
 
     def _build_system_prompt(
         self,

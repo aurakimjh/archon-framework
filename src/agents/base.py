@@ -10,6 +10,7 @@ from collections.abc import AsyncIterator
 
 import litellm
 
+from src.mcp.a2a import A2AMessage, A2AMessageType, A2APriority, A2ARouter
 from src.orchestrator.handoff import (
     Artifacts,
     ChangedFile,
@@ -39,8 +40,9 @@ class BaseAgent(abc.ABC):
 
     role: AgentRole
 
-    def __init__(self, role: AgentRole) -> None:
+    def __init__(self, role: AgentRole, a2a_router: A2ARouter | None = None) -> None:
         self.role = role
+        self._a2a_router = a2a_router
 
     async def execute(
         self,
@@ -211,6 +213,47 @@ class BaseAgent(abc.ABC):
             ),
             quality_gates=QualityGates(),
         )
+
+    def send_a2a(
+        self,
+        to_agent: str,
+        subject: str,
+        body: str,
+        *,
+        message_type: A2AMessageType = A2AMessageType.REQUEST,
+        priority: A2APriority = A2APriority.NORMAL,
+        project_id: str | None = None,
+        task_id: str | None = None,
+    ) -> bool:
+        """다른 에이전트에게 A2A 메시지를 전송한다.
+
+        A2ARouter가 설정되지 않은 경우 False를 반환한다.
+        """
+        if not self._a2a_router:
+            logger.debug("A2A router not configured, skipping message to [%s]", to_agent)
+            return False
+
+        import uuid
+
+        message = A2AMessage(
+            message_id=f"a2a_{uuid.uuid4().hex[:12]}",
+            from_agent=self.role,
+            to_agent=to_agent,
+            message_type=message_type,
+            priority=priority,
+            subject=subject,
+            body=body,
+            project_id=project_id,
+            task_id=task_id,
+        )
+        self._a2a_router.send(message)
+        return True
+
+    def receive_a2a(self) -> list[A2AMessage]:
+        """이 에이전트의 A2A 메시지를 수신한다."""
+        if not self._a2a_router:
+            return []
+        return self._a2a_router.receive(self.role)
 
     def _parse_structured_output(
         self, result_text: str

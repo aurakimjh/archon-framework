@@ -14,6 +14,7 @@ from src.agents.tester import TesterAgent
 from src.gate.evaluator import evaluate_gate
 from src.gate.models import GateDecision
 from src.memory.context_injector import MemoryStore
+from src.notifications.base import GateEvent, Notifier
 from src.orchestrator.handoff import (
     Envelope,
     HandoffArtifact,
@@ -59,9 +60,11 @@ class Orchestrator:
         self,
         memory: MemoryStore | None = None,
         task_chains: dict[str, list[str]] | None = None,
+        notifier: Notifier | None = None,
     ) -> None:
         self.memory = memory or MemoryStore()
         self._task_chains = task_chains or DEFAULT_TASK_CHAINS
+        self._notifier = notifier
 
     async def process_handoff(
         self,
@@ -180,6 +183,9 @@ class Orchestrator:
             retry_count=handoff.envelope.retry_count,
         )
         result.quality_gates.gate_decision = gate
+
+        # 알림 전송
+        await self._send_notification(handoff, result, registry)
 
         # 핸드오프 기록 저장
         self.memory.store_handoff(
@@ -312,6 +318,33 @@ class Orchestrator:
             result = chain_result
 
         return results
+
+    async def _send_notification(
+        self,
+        handoff: HandoffArtifact,
+        result: HandoffArtifact,
+        registry: ProjectRegistry,
+    ) -> None:
+        """Gate 판정 결과를 알림으로 전송한다."""
+        if not self._notifier:
+            return
+
+        event = GateEvent(
+            project_id=handoff.project_context.project_id,
+            project_name=handoff.project_context.project_name,
+            task_id=handoff.task.task_id,
+            gate_decision=result.quality_gates.gate_decision,
+            trigger_reason=result.task.completed_summary[:200],
+            agent_role=result.envelope.from_agent,
+            review_score=result.quality_gates.review_score,
+            retry_count=handoff.envelope.retry_count,
+        )
+
+        if self._notifier.should_notify(event):
+            try:
+                await self._notifier.notify(event)
+            except Exception as e:
+                logger.warning("Notification failed: %s", e)
 
     async def _handle_human_gate(
         self,
