@@ -157,4 +157,4 @@ class ProjectRegistry(BaseModel):
         config = self.agent_config.get(role)
         if config:
             return config.model_override or config.model
-        return f"ollama/{role}"
+        return f"{role}-agent"

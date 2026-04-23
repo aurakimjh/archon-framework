@@ -10,31 +10,36 @@ model_list:
       model: anthropic/claude-sonnet-4-6
       api_key: os.environ/ANTHROPIC_API_KEY
 
-  # 로컬 오픈소스 모델
-  - model_name: frontend-agent
-    litellm_params:
-      model: ollama/qwen3.5:32b
-      api_base: http://localhost:11434
-
+  # 로컬 오픈소스 모델 (LM Studio)
   - model_name: backend-agent
     litellm_params:
-      model: ollama/deepseek-v3.2:70b
-      api_base: http://localhost:11434
+      model: openai/<your-backend-model>
+      api_base: http://localhost:1234/v1
+      api_key: lm-studio
+
+  - model_name: frontend-agent
+    litellm_params:
+      model: openai/<your-frontend-model>
+      api_base: http://localhost:1234/v1
+      api_key: lm-studio
 
   - model_name: tester-agent
     litellm_params:
-      model: ollama/gemma4:14b
-      api_base: http://localhost:11434
+      model: openai/<your-tester-model>
+      api_base: http://localhost:1234/v1
+      api_key: lm-studio
 
   - model_name: devops-agent
     litellm_params:
-      model: ollama/glm-5:14b
-      api_base: http://localhost:11434
+      model: openai/<your-devops-model>
+      api_base: http://localhost:1234/v1
+      api_key: lm-studio
 
   - model_name: docs-agent
     litellm_params:
-      model: ollama/mimo-v2:7b
-      api_base: http://localhost:11434
+      model: openai/<your-docs-model>
+      api_base: http://localhost:1234/v1
+      api_key: lm-studio
 
 router_settings:
   routing_strategy: usage-based-routing
@@ -45,4 +50,3 @@ router_settings:
 
 general_settings:
   master_key: os.environ/LITELLM_MASTER_KEY
-  database_url: os.environ/DATABASE_URL
