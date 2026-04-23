@@ -2,12 +2,10 @@
 
 from __future__ import annotations
 
-import copy
 import logging
-from typing import Any
 
-from src.agents.base import BaseAgent
 from src.agents.backend import BackendAgent
+from src.agents.base import BaseAgent
 from src.agents.devops import DevOpsAgent
 from src.agents.docs import DocsAgent
 from src.agents.frontend import FrontendAgent
@@ -20,7 +18,6 @@ from src.orchestrator.handoff import (
     Envelope,
     HandoffArtifact,
     HumanGatePackage,
-    QualityGates,
 )
 from src.registry.models import AgentRole, ProjectRegistry
 
@@ -36,6 +33,15 @@ AGENT_POOL: dict[str, BaseAgent] = {
     AgentRole.REVIEWER: ReviewerAgent(),
 }
 
+# 기본 태스크 체인 정의 (역할별 후속 에이전트)
+DEFAULT_TASK_CHAINS: dict[str, list[str]] = {
+    AgentRole.BACKEND: [AgentRole.TESTER, AgentRole.DOCS],
+    AgentRole.FRONTEND: [AgentRole.TESTER, AgentRole.DOCS],
+    AgentRole.TESTER: [],
+    AgentRole.DEVOPS: [AgentRole.TESTER],
+    AgentRole.DOCS: [],
+}
+
 
 class Orchestrator:
     """전체 아키텍처 설계, 작업 분배, 코드 리뷰, Human Gate 판단.
@@ -49,8 +55,13 @@ class Orchestrator:
         └─ L4_DEPLOY  → 배포 승인 대기
     """
 
-    def __init__(self, memory: MemoryStore | None = None) -> None:
+    def __init__(
+        self,
+        memory: MemoryStore | None = None,
+        task_chains: dict[str, list[str]] | None = None,
+    ) -> None:
         self.memory = memory or MemoryStore()
+        self._task_chains = task_chains or DEFAULT_TASK_CHAINS
 
     async def process_handoff(
         self,
@@ -173,7 +184,12 @@ class Orchestrator:
         # 핸드오프 기록 저장
         self.memory.store_handoff(
             project_id=handoff.project_context.project_id,
-            handoff_data=result.model_dump(),
+            handoff_id=result.envelope.handoff_id,
+            summary=result.task.completed_summary,
+            metadata={
+                "agent": result.envelope.from_agent,
+                "gate": str(result.quality_gates.gate_decision),
+            },
         )
 
         return result
@@ -222,6 +238,80 @@ class Orchestrator:
             handoff=handoff,
             message_template=registry.git_config.auto_commit_message_template,
         )
+
+    def get_next_agents(self, current_role: str) -> list[str]:
+        """현재 역할의 태스크 체인에서 다음 에이전트 목록을 반환."""
+        return list(self._task_chains.get(current_role, []))
+
+    def _route_to_next_agent(
+        self,
+        completed_handoff: HandoffArtifact,
+        next_role: str,
+    ) -> HandoffArtifact:
+        """완료된 핸드오프를 기반으로 다음 에이전트용 핸드오프를 생성."""
+        return HandoffArtifact(
+            envelope=Envelope(
+                handoff_id=f"hf_{completed_handoff.task.task_id}_{next_role}",
+                from_agent=completed_handoff.envelope.to_agent,
+                to_agent=next_role,
+                parent_handoff_id=completed_handoff.envelope.handoff_id,
+            ),
+            project_context=completed_handoff.project_context,
+            task=completed_handoff.task.model_copy(
+                update={
+                    "next_instructions": (
+                        f"Review and process the output from "
+                        f"{completed_handoff.envelope.to_agent} agent. "
+                        f"Summary: {completed_handoff.task.completed_summary}"
+                    ),
+                },
+            ),
+            artifacts=completed_handoff.artifacts,
+        )
+
+    async def process_chain(
+        self,
+        handoff: HandoffArtifact,
+        registry: ProjectRegistry,
+    ) -> list[HandoffArtifact]:
+        """태스크 체인을 따라 순차 실행.
+
+        첫 에이전트를 실행하고, AUTO_PASS되면 체인에 정의된
+        후속 에이전트들을 순서대로 실행한다.
+
+        Returns:
+            각 단계의 결과 HandoffArtifact 목록.
+        """
+        results: list[HandoffArtifact] = []
+
+        # 첫 에이전트 실행
+        result = await self.process_handoff(handoff, registry)
+        results.append(result)
+
+        # AUTO_PASS가 아니면 체인 중단
+        if result.quality_gates.gate_decision != GateDecision.AUTO_PASS:
+            return results
+
+        # 후속 에이전트 체인 실행
+        current_role = handoff.envelope.to_agent
+        next_roles = self.get_next_agents(current_role)
+
+        for next_role in next_roles:
+            next_handoff = self._route_to_next_agent(result, next_role)
+            chain_result = await self.process_handoff(next_handoff, registry)
+            results.append(chain_result)
+
+            if chain_result.quality_gates.gate_decision != GateDecision.AUTO_PASS:
+                logger.warning(
+                    "Chain interrupted at [%s] — gate: %s",
+                    next_role,
+                    chain_result.quality_gates.gate_decision,
+                )
+                break
+
+            result = chain_result
+
+        return results
 
     async def _handle_human_gate(
         self,
