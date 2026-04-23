@@ -3,12 +3,16 @@
 from __future__ import annotations
 
 import abc
+import json
 import logging
+import re
 
 import litellm
 
 from src.orchestrator.handoff import (
     Artifacts,
+    ChangedFile,
+    Decision,
     Envelope,
     HandoffArtifact,
     QualityGates,
@@ -17,6 +21,12 @@ from src.orchestrator.handoff import (
 from src.registry.models import AgentRole, ProjectRegistry
 
 logger = logging.getLogger(__name__)
+
+# LLM 구조화 출력 태그
+_OUTPUT_TAG_PATTERN = re.compile(
+    r"<archon-output>(.*?)</archon-output>",
+    re.DOTALL,
+)
 
 
 class BaseAgent(abc.ABC):
@@ -96,7 +106,14 @@ class BaseAgent(abc.ABC):
         input_handoff: HandoffArtifact,
         result_text: str,
     ) -> HandoffArtifact:
-        """실행 결과를 새 HandoffArtifact로 패키징."""
+        """실행 결과를 새 HandoffArtifact로 패키징.
+
+        LLM이 <archon-output> 태그 내에 구조화된 JSON을 반환하면
+        changed_files, decisions_made 등을 파싱하여 바인딩한다.
+        태그가 없으면 raw text를 completed_summary로 사용한다.
+        """
+        parsed = self._parse_structured_output(result_text)
+
         return HandoffArtifact(
             envelope=Envelope(
                 handoff_id=f"hf_{input_handoff.envelope.handoff_id}_out",
@@ -107,9 +124,72 @@ class BaseAgent(abc.ABC):
             project_context=input_handoff.project_context,
             task=Task(
                 task_id=input_handoff.task.task_id,
-                completed_summary=result_text[:500],
+                completed_summary=parsed.get(
+                    "summary", result_text[:500]
+                ),
+                decisions_made=parsed.get("decisions", []),
                 next_instructions="Review and validate the output.",
             ),
-            artifacts=Artifacts(),
+            artifacts=Artifacts(
+                changed_files=parsed.get("changed_files", []),
+            ),
             quality_gates=QualityGates(),
         )
+
+    def _parse_structured_output(
+        self, result_text: str
+    ) -> dict:
+        """LLM 출력에서 <archon-output> JSON 블록을 추출한다.
+
+        예상 형식:
+        <archon-output>
+        {
+          "summary": "...",
+          "changed_files": [{"path": "...", "change_type": "added", "reason": "..."}],
+          "decisions": [{"decision": "...", "reason": "..."}]
+        }
+        </archon-output>
+
+        파싱 실패 시 빈 dict 반환 (기존 fallback 동작).
+        """
+        match = _OUTPUT_TAG_PATTERN.search(result_text)
+        if not match:
+            return {}
+
+        try:
+            data = json.loads(match.group(1))
+        except (json.JSONDecodeError, ValueError):
+            logger.warning(
+                "Agent [%s] returned malformed archon-output JSON",
+                self.role,
+            )
+            return {}
+
+        result: dict = {}
+
+        if "summary" in data:
+            result["summary"] = str(data["summary"])[:500]
+
+        if "changed_files" in data and isinstance(data["changed_files"], list):
+            result["changed_files"] = [
+                ChangedFile(
+                    path=f.get("path", ""),
+                    change_type=f.get("change_type", "modified"),
+                    reason=f.get("reason", ""),
+                )
+                for f in data["changed_files"]
+                if isinstance(f, dict) and f.get("path")
+            ]
+
+        if "decisions" in data and isinstance(data["decisions"], list):
+            result["decisions"] = [
+                Decision(
+                    decision=d.get("decision", ""),
+                    reason=d.get("reason", ""),
+                    alternatives_considered=d.get("alternatives", []),
+                )
+                for d in data["decisions"]
+                if isinstance(d, dict) and d.get("decision")
+            ]
+
+        return result

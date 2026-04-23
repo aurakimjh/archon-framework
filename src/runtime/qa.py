@@ -5,6 +5,7 @@ from __future__ import annotations
 import asyncio
 import json
 import logging
+import uuid
 import xml.etree.ElementTree as ET
 from dataclasses import dataclass
 from pathlib import Path
@@ -67,10 +68,21 @@ async def run_typecheck(project_root: str) -> str:
     return "passed" if result.success else "failed"
 
 
-async def run_tests(project_root: str) -> TestResults:
-    """pytest 실행. TestResults 반환."""
+async def run_tests(
+    project_root: str,
+    run_id: str | None = None,
+) -> TestResults:
+    """pytest 실행. TestResults 반환.
+
+    Args:
+        project_root: 프로젝트 루트 경로.
+        run_id: 파일 격리용 고유 ID. None이면 자동 생성.
+    """
+    rid = run_id or uuid.uuid4().hex[:8]
+    xml_filename = f".test-results-{rid}.xml"
+
     result = await _run(
-        ["pytest", "tests/", "-v", "--tb=short", "--junitxml=.test-results.xml"],
+        ["pytest", "tests/", "-v", "--tb=short", f"--junitxml={xml_filename}"],
         cwd=project_root,
     )
 
@@ -79,7 +91,7 @@ async def run_tests(project_root: str) -> TestResults:
         return TestResults()
 
     # JUnit XML 파싱 시도
-    xml_path = Path(project_root) / ".test-results.xml"
+    xml_path = Path(project_root) / xml_filename
     if xml_path.exists():
         try:
             return _parse_junit_xml(xml_path)
@@ -148,17 +160,28 @@ async def run_security_scan(project_root: str) -> SecurityScan:
         return SecurityScan(tool="semgrep")
 
 
-async def run_coverage(project_root: str) -> float:
-    """pytest --cov로 커버리지 측정."""
+async def run_coverage(
+    project_root: str,
+    run_id: str | None = None,
+) -> float:
+    """pytest --cov로 커버리지 측정.
+
+    Args:
+        project_root: 프로젝트 루트 경로.
+        run_id: 파일 격리용 고유 ID. None이면 자동 생성.
+    """
+    rid = run_id or uuid.uuid4().hex[:8]
+    cov_filename = f".coverage-{rid}.json"
+
     result = await _run(
-        ["pytest", "tests/", "--cov=src", "--cov-report=json:.coverage.json", "-q"],
+        ["pytest", "tests/", "--cov=src", f"--cov-report=json:{cov_filename}", "-q"],
         cwd=project_root,
     )
 
     if result.returncode == -1:
         return 0.0
 
-    cov_path = Path(project_root) / ".coverage.json"
+    cov_path = Path(project_root) / cov_filename
     if cov_path.exists():
         try:
             data = json.loads(cov_path.read_text())
@@ -175,16 +198,24 @@ async def run_coverage(project_root: str) -> float:
 async def run_qa_pipeline(
     project_root: str,
     registry: ProjectRegistry,
+    run_id: str | None = None,
 ) -> QualityGates:
-    """전체 QA 파이프라인 실행. 병렬로 lint, typecheck, test, build, security를 돌린다."""
-    logger.info("Running QA pipeline for project root: %s", project_root)
+    """전체 QA 파이프라인 실행. 병렬로 lint, typecheck, test, build, security를 돌린다.
+
+    Args:
+        project_root: 프로젝트 루트 경로.
+        registry: 프로젝트 레지스트리.
+        run_id: 파일 격리용 고유 ID. None이면 자동 생성.
+    """
+    rid = run_id or uuid.uuid4().hex[:8]
+    logger.info("Running QA pipeline for project root: %s (run_id: %s)", project_root, rid)
 
     # 병렬 실행
     lint_task = asyncio.create_task(run_lint(project_root))
     build_task = asyncio.create_task(run_build(project_root))
-    test_task = asyncio.create_task(run_tests(project_root))
+    test_task = asyncio.create_task(run_tests(project_root, run_id=rid))
     security_task = asyncio.create_task(run_security_scan(project_root))
-    coverage_task = asyncio.create_task(run_coverage(project_root))
+    coverage_task = asyncio.create_task(run_coverage(project_root, run_id=rid))
 
     lint_result, build_result, test_results, security_scan, coverage = await asyncio.gather(
         lint_task, build_task, test_task, security_task, coverage_task,
