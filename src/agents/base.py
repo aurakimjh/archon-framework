@@ -6,6 +6,7 @@ import abc
 import json
 import logging
 import re
+from collections.abc import AsyncIterator
 
 import litellm
 
@@ -47,7 +48,15 @@ class BaseAgent(abc.ABC):
         registry: ProjectRegistry,
     ) -> HandoffArtifact:
         """태스크를 실행하고 다음 핸드오프를 생성한다."""
+        from src.memory.compressor import compress_handoff
+
         model = registry.get_model_for_role(self.role)
+        agent_cfg = registry.agent_config.get(self.role)
+        max_ctx = (agent_cfg.max_tokens * 3) if agent_cfg else 12000
+
+        # 토큰 초과 시 자동 압축
+        handoff = compress_handoff(handoff, max_context_tokens=max_ctx)
+
         logger.info(
             "Agent [%s] executing task [%s] with model [%s]",
             self.role,
@@ -73,6 +82,73 @@ class BaseAgent(abc.ABC):
         )
 
         result_text = response.choices[0].message.content or ""
+        return self._build_handoff_result(handoff, result_text)
+
+    async def execute_streaming(
+        self,
+        handoff: HandoffArtifact,
+        registry: ProjectRegistry,
+    ) -> AsyncIterator[str]:
+        """스트리밍 모드로 태스크를 실행한다.
+
+        청크 단위로 텍스트를 yield하며, 완료 시 handoff를 반환하지 않고
+        호출자가 collect해서 _build_handoff_result()를 호출해야 한다.
+        타임아웃은 AgentModelConfig.timeout_seconds를 따른다.
+        """
+        model = registry.get_model_for_role(self.role)
+        agent_cfg = registry.agent_config.get(self.role)
+        timeout = agent_cfg.timeout_seconds if agent_cfg else 300
+
+        logger.info(
+            "Agent [%s] streaming task [%s] with model [%s] (timeout=%ds)",
+            self.role,
+            handoff.task.task_id,
+            model,
+            timeout,
+        )
+
+        system_prompt = self._build_system_prompt(handoff, registry)
+        user_prompt = self._build_user_prompt(handoff)
+
+        response = await litellm.acompletion(
+            model=model,
+            messages=[
+                {"role": "system", "content": system_prompt},
+                {"role": "user", "content": user_prompt},
+            ],
+            max_tokens=agent_cfg.max_tokens if agent_cfg else 4096,
+            temperature=agent_cfg.temperature if agent_cfg else 0.2,
+            stream=True,
+            timeout=timeout,
+        )
+
+        async for chunk in response:
+            delta = chunk.choices[0].delta.content
+            if delta:
+                yield delta
+
+    async def execute_with_streaming(
+        self,
+        handoff: HandoffArtifact,
+        registry: ProjectRegistry,
+        on_chunk: None | (type[None]) = None,
+    ) -> HandoffArtifact:
+        """스트리밍 실행 후 결과를 HandoffArtifact로 조립.
+
+        streaming이 활성화된 경우 execute_streaming()으로 실행하고,
+        비활성화 상태면 기존 execute()로 폴백한다.
+        """
+        agent_cfg = registry.agent_config.get(self.role)
+        use_streaming = agent_cfg.streaming if agent_cfg else False
+
+        if not use_streaming:
+            return await self.execute(handoff, registry)
+
+        chunks: list[str] = []
+        async for chunk in self.execute_streaming(handoff, registry):
+            chunks.append(chunk)
+
+        result_text = "".join(chunks)
         return self._build_handoff_result(handoff, result_text)
 
     @abc.abstractmethod

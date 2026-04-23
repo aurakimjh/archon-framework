@@ -63,6 +63,11 @@ class AgentModelConfig(BaseModel):
     temperature: float = 0.2
     model_override: str | None = None
     reviewer_guidelines_path: str | None = None
+    # Async Streaming
+    streaming: bool = False
+    timeout_seconds: int = 300
+    # Complexity Router
+    high_complexity_model: str | None = None
 
 
 class QualityPolicy(BaseModel):
