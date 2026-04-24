@@ -1,4 +1,4 @@
-"""LLM Selector / Router — 역할별 모델 라우팅 + 복잡도 + vLLM 동적 선택."""
+"""LLM Selector / Router — 역할별 모델 라우팅 + 복잡도 + vLLM/Ollama 동적 선택."""
 
 from __future__ import annotations
 
@@ -7,6 +7,7 @@ import logging
 from src.orchestrator.handoff import HandoffArtifact
 from src.registry.models import AgentRole, ProjectRegistry
 from src.router.complexity import ComplexityLevel, measure_complexity
+from src.runtime.ollama_bridge import OllamaBridge
 from src.runtime.vllm_bridge import VLLMBridge
 
 logger = logging.getLogger(__name__)
@@ -95,4 +96,64 @@ def get_model_with_vllm(
                 return config["model"], config
 
     # 3. vLLM 매칭 없으면 기본 라우팅
+    return get_model_for_handoff(role, handoff, registry), None
+
+
+def get_model_with_ollama(
+    role: str,
+    handoff: HandoffArtifact,
+    registry: ProjectRegistry,
+    ollama_bridge: OllamaBridge | None = None,
+) -> tuple[str, dict | None]:
+    """Ollama 워커 가용 시 Ollama로 라우팅, 아니면 기본 라우팅.
+
+    Returns:
+        (모델명, LiteLLM 추가 설정 dict 또는 None) 튜플.
+        Ollama 라우팅 시 api_base 등 추가 설정이 포함된다.
+    """
+    if not ollama_bridge:
+        return get_model_for_handoff(role, handoff, registry), None
+
+    for endpoint in ollama_bridge.list_healthy():
+        if role in endpoint.tags or endpoint.name.startswith(role):
+            config = ollama_bridge.get_litellm_config(endpoint.name)
+            if config:
+                logger.info(
+                    "Ollama routing: [%s] → %s (%s)",
+                    role, endpoint.name, endpoint.base_url,
+                )
+                return config["model"], config
+
+    return get_model_for_handoff(role, handoff, registry), None
+
+
+def get_model_with_provider(
+    role: str,
+    handoff: HandoffArtifact,
+    registry: ProjectRegistry,
+    vllm_bridge: VLLMBridge | None = None,
+    ollama_bridge: OllamaBridge | None = None,
+) -> tuple[str, dict | None]:
+    """vLLM → Ollama → 기본 라우팅 순으로 모델을 선택한다.
+
+    Returns:
+        (모델명, LiteLLM 추가 설정 dict 또는 None) 튜플.
+    """
+    # 1. vLLM 우선
+    if vllm_bridge:
+        model, config = get_model_with_vllm(
+            role, handoff, registry, vllm_bridge,
+        )
+        if config:
+            return model, config
+
+    # 2. Ollama
+    if ollama_bridge:
+        model, config = get_model_with_ollama(
+            role, handoff, registry, ollama_bridge,
+        )
+        if config:
+            return model, config
+
+    # 3. 기본 라우팅
     return get_model_for_handoff(role, handoff, registry), None
