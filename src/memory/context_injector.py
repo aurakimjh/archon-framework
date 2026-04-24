@@ -5,6 +5,7 @@ from __future__ import annotations
 import logging
 from typing import Any
 
+from src.memory.policy import MemoryAccessController, MemoryPolicy, MemorySharingMode
 from src.orchestrator.handoff import (
     ErrorRecord,
     HumanFeedback,
@@ -183,17 +184,30 @@ class MemoryStore:
         self,
         task_instructions: str,
         project_id: str,
+        *,
+        memory_policy: MemoryPolicy | None = None,
+        project_tags: list[str] | None = None,
     ) -> MemoryContext:
         """에이전트에 주입할 메모리 컨텍스트를 생성한다.
 
         L2(ChromaDB)에서 유사 핸드오프를 검색하고,
         L3(Mem0)에서 크로스 프로젝트 패턴을 검색하여
         MemoryContext로 조합한다.
+
+        memory_policy가 주어지면 크로스 프로젝트 검색 전 접근 제어를 적용한다.
         """
         past_decisions: list[PastDecision] = []
         known_patterns: list[KnownPattern] = []
         error_history: list[ErrorRecord] = []
         human_feedback: list[HumanFeedback] = []
+
+        access_ctrl: MemoryAccessController | None = None
+        if memory_policy:
+            access_ctrl = MemoryAccessController(
+                project_id=project_id,
+                policy=memory_policy,
+                project_tags=project_tags or [],
+            )
 
         # L2: 유사 핸드오프 검색 → past_decisions
         similar_handoffs = self.search_handoffs(project_id, task_instructions, n_results=5)
@@ -207,8 +221,25 @@ class MemoryStore:
                 )
             )
 
-        # L3: 패턴 검색 → known_patterns
-        patterns = self.search_patterns(task_instructions, limit=5)
+        # L3: 패턴 검색 → known_patterns (정책 체크 포함)
+        # ISOLATED 또는 민감 프로젝트면 크로스 프로젝트 L3 검색 건너뜀
+        skip_cross_project = (
+            access_ctrl is not None
+            and (
+                access_ctrl.is_self_sensitive()
+                or memory_policy.sharing_mode == MemorySharingMode.ISOLATED
+            )
+        )
+        if skip_cross_project:
+            logger.debug(
+                "MemoryStore [%s]: skipping cross-project L3 search (policy=%s, sensitive=%s)",
+                project_id,
+                memory_policy.sharing_mode if memory_policy else "n/a",
+                access_ctrl.is_self_sensitive() if access_ctrl else False,
+            )
+            patterns = []
+        else:
+            patterns = self.search_patterns(task_instructions, limit=5)
         for p in patterns:
             known_patterns.append(
                 KnownPattern(
