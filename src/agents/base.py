@@ -10,6 +10,12 @@ from collections.abc import AsyncIterator
 
 import litellm
 
+from src.errors import InputValidationError, OutputValidationError, PathGuardError, TokenBudgetExceededError
+from src.guardrails.input_validator import InputValidator
+from src.guardrails.output_validator import OutputValidator
+from src.guardrails.path_guard import PathGuard
+from src.guardrails.policy import GuardrailPolicy
+from src.guardrails.token_budget import TokenBudgetTracker
 from src.mcp.a2a import A2AMessage, A2AMessageType, A2APriority, A2ARouter
 from src.orchestrator.handoff import (
     Artifacts,
@@ -40,9 +46,17 @@ class BaseAgent(abc.ABC):
 
     role: AgentRole
 
-    def __init__(self, role: AgentRole, a2a_router: A2ARouter | None = None) -> None:
+    def __init__(
+        self,
+        role: AgentRole,
+        a2a_router: A2ARouter | None = None,
+        guardrail_policy: GuardrailPolicy | None = None,
+        token_budget: TokenBudgetTracker | None = None,
+    ) -> None:
         self.role = role
         self._a2a_router = a2a_router
+        self._guardrail_policy = guardrail_policy
+        self._token_budget = token_budget
 
     async def execute(
         self,
@@ -69,6 +83,12 @@ class BaseAgent(abc.ABC):
         system_prompt = self._build_system_prompt(handoff, registry)
         user_prompt = self._build_user_prompt(handoff)
 
+        # --- 가드레일: 입력 검증 ---
+        self._run_input_validation(system_prompt, user_prompt, handoff)
+
+        # --- 가드레일: 토큰 예산 사전 확인 ---
+        self._check_token_budget(handoff.task.task_id)
+
         response = await litellm.acompletion(
             model=model,
             messages=[
@@ -84,7 +104,27 @@ class BaseAgent(abc.ABC):
         )
 
         result_text = response.choices[0].message.content or ""
-        return self._build_handoff_result(handoff, result_text)
+
+        # --- 가드레일: 출력 검증 ---
+        self._run_output_validation(result_text)
+
+        # --- 가드레일: 토큰 사용량 기록 ---
+        usage = getattr(response, "usage", None)
+        if usage and self._token_budget:
+            self._token_budget.record(
+                agent_role=self.role,
+                model=model,
+                task_id=handoff.task.task_id,
+                input_tokens=getattr(usage, "prompt_tokens", 0),
+                output_tokens=getattr(usage, "completion_tokens", 0),
+            )
+
+        result = self._build_handoff_result(handoff, result_text)
+
+        # --- 가드레일: 경로 보호 확인 ---
+        self._run_path_guard(result, registry)
+
+        return result
 
     async def execute_streaming(
         self,
@@ -213,6 +253,60 @@ class BaseAgent(abc.ABC):
             ),
             quality_gates=QualityGates(),
         )
+
+    # --- 가드레일 헬퍼 ---
+
+    def _run_input_validation(
+        self, system_prompt: str, user_prompt: str, handoff: HandoffArtifact
+    ) -> None:
+        if not self._guardrail_policy:
+            return
+        validator = InputValidator(self._guardrail_policy)
+        result = validator.validate(system_prompt, user_prompt)
+        if not result.passed:
+            raise InputValidationError(
+                result.violations,
+                self._guardrail_policy.input_violation_action,
+            )
+
+    def _check_token_budget(self, task_id: str) -> None:
+        if not self._token_budget or not self._guardrail_policy:
+            return
+        status = self._token_budget.check_before_call(self.role, estimated_tokens=0)
+        if status.limit_exceeded and self._guardrail_policy.budget_exceeded_action == "block":
+            raise TokenBudgetExceededError(
+                status.project_id,
+                status.daily_tokens_used,
+                status.daily_token_limit,
+            )
+
+    def _run_output_validation(self, result_text: str) -> None:
+        if not self._guardrail_policy:
+            return
+        validator = OutputValidator(self._guardrail_policy)
+        result = validator.validate(result_text)
+        if not result.passed:
+            raise OutputValidationError(
+                result.violations,
+                self._guardrail_policy.output_violation_action,
+            )
+
+    def _run_path_guard(
+        self, result: HandoffArtifact, registry: ProjectRegistry
+    ) -> None:
+        if not self._guardrail_policy:
+            return
+        protected = registry.git_config.protected_paths
+        guard = PathGuard(protected_paths=protected, policy=self._guardrail_policy)
+        guard_result = guard.check_handoff(result)
+        if not guard_result.passed:
+            raise PathGuardError(guard_result.blocked_paths)
+        if guard_result.requires_human_gate:
+            logger.warning(
+                "PathGuard [%s]: config/sensitive file change detected — Human Gate recommended: %s",
+                self.role,
+                guard_result.config_changes,
+            )
 
     def send_a2a(
         self,

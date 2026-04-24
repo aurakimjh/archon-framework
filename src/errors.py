@@ -104,3 +104,50 @@ class MemoryError(ArchonError):
 
 class VectorStoreError(MemoryError):
     """벡터 스토어 관련 예외."""
+
+
+# --- Guardrails ---
+
+
+class GuardrailError(ArchonError):
+    """가드레일 위반 최상위 예외."""
+
+
+class InputValidationError(GuardrailError):
+    """입력 검증 실패 (민감 정보, 프롬프트 인젝션, 토큰 초과 등)."""
+
+    def __init__(self, violations: list, action: str = "block") -> None:
+        self.violations = violations
+        self.action = action
+        names = [v.pattern_name for v in violations]
+        super().__init__(f"Input validation failed [{action}]: {names}")
+
+
+class OutputValidationError(GuardrailError):
+    """출력 검증 실패 (위험 코드, 보안 취약점 등)."""
+
+    def __init__(self, violations: list, action: str = "block") -> None:
+        self.violations = violations
+        self.action = action
+        names = [v.pattern_name for v in violations]
+        super().__init__(f"Output validation failed [{action}]: {names}")
+
+
+class TokenBudgetExceededError(GuardrailError):
+    """토큰 예산 초과."""
+
+    def __init__(self, project_id: str, used: int, limit: int) -> None:
+        self.project_id = project_id
+        self.used = used
+        self.limit = limit
+        super().__init__(
+            f"Token budget exceeded for [{project_id}]: {used} / {limit} tokens"
+        )
+
+
+class PathGuardError(GuardrailError):
+    """보호 경로 접근 차단."""
+
+    def __init__(self, paths: list[str]) -> None:
+        self.paths = paths
+        super().__init__(f"Protected path access blocked: {paths}")
