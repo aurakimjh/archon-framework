@@ -16,6 +16,8 @@ from src.guardrails.output_validator import OutputValidator
 from src.guardrails.path_guard import PathGuard
 from src.guardrails.policy import GuardrailPolicy
 from src.guardrails.token_budget import TokenBudgetTracker
+from src.healing.diagnostics import AgentDiagnostician
+from src.healing.health_monitor import AgentHealthMonitor
 from src.log import get_logger
 from src.mcp.a2a import A2AMessage, A2AMessageType, A2APriority, A2ARouter
 from src.orchestrator.handoff import (
@@ -54,11 +56,15 @@ class BaseAgent(abc.ABC):
         a2a_router: A2ARouter | None = None,
         guardrail_policy: GuardrailPolicy | None = None,
         token_budget: TokenBudgetTracker | None = None,
+        health_monitor: AgentHealthMonitor | None = None,
+        diagnostician: AgentDiagnostician | None = None,
     ) -> None:
         self.role = role
         self._a2a_router = a2a_router
         self._guardrail_policy = guardrail_policy
         self._token_budget = token_budget
+        self._health_monitor = health_monitor
+        self._diagnostician = diagnostician
         # 구조화 로거 (역할 컨텍스트 고정)
         self.slog = get_logger(__name__, agent_role=str(role))
 
@@ -68,6 +74,7 @@ class BaseAgent(abc.ABC):
         registry: ProjectRegistry,
     ) -> HandoffArtifact:
         """태스크를 실행하고 다음 핸드오프를 생성한다."""
+        import time
         from src.memory.compressor import compress_handoff
 
         model = registry.get_model_for_role(self.role)
@@ -93,20 +100,32 @@ class BaseAgent(abc.ABC):
         # --- 가드레일: 토큰 예산 사전 확인 ---
         self._check_token_budget(handoff.task.task_id)
 
-        response = await litellm.acompletion(
-            model=model,
-            messages=[
-                {"role": "system", "content": system_prompt},
-                {"role": "user", "content": user_prompt},
-            ],
-            max_tokens=registry.agent_config.get(self.role, None)
-            and registry.agent_config[self.role].max_tokens
-            or 4096,
-            temperature=registry.agent_config.get(self.role, None)
-            and registry.agent_config[self.role].temperature
-            or 0.2,
-        )
+        _start = time.perf_counter()
+        try:
+            response = await litellm.acompletion(
+                model=model,
+                messages=[
+                    {"role": "system", "content": system_prompt},
+                    {"role": "user", "content": user_prompt},
+                ],
+                max_tokens=registry.agent_config.get(self.role, None)
+                and registry.agent_config[self.role].max_tokens
+                or 4096,
+                temperature=registry.agent_config.get(self.role, None)
+                and registry.agent_config[self.role].temperature
+                or 0.2,
+            )
+        except Exception as exc:
+            _latency = (time.perf_counter() - _start) * 1000
+            if self._health_monitor:
+                self._health_monitor.record_failure(
+                    error=str(exc), latency_ms=_latency
+                )
+            if self._diagnostician:
+                self._diagnostician.record_error(str(exc))
+            raise
 
+        _latency_ms = (time.perf_counter() - _start) * 1000
         result_text = response.choices[0].message.content or ""
 
         # --- 가드레일: 출력 검증 ---
@@ -130,11 +149,16 @@ class BaseAgent(abc.ABC):
         # --- 가드레일: 경로 보호 확인 ---
         self._run_path_guard(result, registry)
 
+        # --- 헬스 기록: 성공 ---
+        if self._health_monitor:
+            self._health_monitor.record_success(latency_ms=_latency_ms)
+
         self.slog.info(
             "agent_execute_done",
             task_id=handoff.task.task_id,
             input_tokens=inp_tokens,
             output_tokens=out_tokens,
+            latency_ms=round(_latency_ms, 1),
         )
 
         return result

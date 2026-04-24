@@ -48,6 +48,7 @@ class CircuitBreaker:
         self,
         name: str,
         config: CircuitBreakerConfig | None = None,
+        health_monitor: Any | None = None,
     ) -> None:
         self.name = name
         self._cfg = config or CircuitBreakerConfig()
@@ -57,6 +58,7 @@ class CircuitBreaker:
         self._opened_at: float | None = None
         self._half_open_calls = 0
         self._lock = asyncio.Lock()
+        self._health_monitor = health_monitor  # AgentHealthMonitor (optional)
 
     @property
     def state(self) -> CircuitState:
@@ -161,6 +163,8 @@ class CircuitBreaker:
                     self.name,
                     self._failure_count,
                 )
+                if self._health_monitor is not None:
+                    self._health_monitor.record_circuit_open()
 
 
 class CircuitBreakerRegistry:
