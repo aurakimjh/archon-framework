@@ -1,0 +1,81 @@
+<!DOCTYPE html>
+<html lang="ko">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Archon Dashboard</title>
+  <link rel="stylesheet" href="style.css">
+</head>
+<body>
+<div class="container">
+  <header>
+    <h1>Archon Dashboard</h1>
+    <span id="connection-status" style="color:var(--muted);font-size:0.85rem;">Connecting...</span>
+  </header>
+
+  <!-- Summary Cards -->
+  <div class="grid">
+    <div class="card">
+      <h3>Projects</h3>
+      <div class="value" id="project-count">-</div>
+    </div>
+    <div class="card">
+      <h3>Active Agents</h3>
+      <div class="value" id="agent-count">-</div>
+    </div>
+    <div class="card">
+      <h3>Today's Cost</h3>
+      <div class="value" id="total-cost">$0.00</div>
+    </div>
+    <div class="card">
+      <h3>Gate Queue</h3>
+      <div class="value" id="gate-count">0</div>
+    </div>
+    <div class="card">
+      <h3>Success Rate</h3>
+      <div class="value" id="success-rate">-</div>
+    </div>
+  </div>
+
+  <!-- Projects Table -->
+  <div class="section">
+    <h2>Projects</h2>
+    <div class="card">
+      <table>
+        <thead><tr><th>ID</th><th>Name</th><th>Status</th><th>Priority</th></tr></thead>
+        <tbody id="projects-body"></tbody>
+      </table>
+    </div>
+  </div>
+
+  <!-- Agents Table -->
+  <div class="section">
+    <h2>Agent Status</h2>
+    <div class="card">
+      <table>
+        <thead><tr><th>Role</th><th>Health</th><th>Failures</th><th>Latency</th></tr></thead>
+        <tbody id="agents-body"></tbody>
+      </table>
+    </div>
+  </div>
+
+  <!-- Gate Queue -->
+  <div class="section">
+    <h2>Human Gate Queue</h2>
+    <div class="card">
+      <table>
+        <thead><tr><th>Handoff</th><th>Project</th><th>Level</th><th>Agent</th><th>Action</th></tr></thead>
+        <tbody id="gates-body"></tbody>
+      </table>
+    </div>
+  </div>
+
+  <!-- Events Log -->
+  <div class="section">
+    <h2>Live Events</h2>
+    <div id="events-log"></div>
+  </div>
+</div>
+<script src="dashboard.js"></script>
+</body>
+</html>

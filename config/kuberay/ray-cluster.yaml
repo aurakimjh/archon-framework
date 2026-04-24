@@ -1,0 +1,108 @@
+apiVersion: ray.io/v1
+kind: RayCluster
+metadata:
+  name: archon-ray
+  namespace: archon
+  labels:
+    app: archon
+    component: ray-cluster
+spec:
+  rayVersion: "2.30.0"
+  headGroupSpec:
+    rayStartParams:
+      dashboard-host: "0.0.0.0"
+      num-cpus: "0"
+    template:
+      metadata:
+        labels:
+          app: archon
+          component: ray-head
+      spec:
+        containers:
+          - name: ray-head
+            image: rayproject/ray:2.30.0
+            ports:
+              - containerPort: 6379
+                name: gcs
+              - containerPort: 8265
+                name: dashboard
+              - containerPort: 10001
+                name: client
+            resources:
+              requests:
+                cpu: "2"
+                memory: "4Gi"
+              limits:
+                cpu: "4"
+                memory: "8Gi"
+            volumeMounts:
+              - name: ray-logs
+                mountPath: /tmp/ray
+        volumes:
+          - name: ray-logs
+            emptyDir: {}
+
+  workerGroupSpecs:
+    - groupName: cpu-workers
+      replicas: 1
+      minReplicas: 0
+      maxReplicas: 10
+      rayStartParams:
+        num-cpus: "4"
+      template:
+        metadata:
+          labels:
+            app: archon
+            component: ray-worker-cpu
+        spec:
+          containers:
+            - name: ray-worker
+              image: rayproject/ray:2.30.0
+              resources:
+                requests:
+                  cpu: "2"
+                  memory: "4Gi"
+                limits:
+                  cpu: "4"
+                  memory: "8Gi"
+              volumeMounts:
+                - name: ray-logs
+                  mountPath: /tmp/ray
+          volumes:
+            - name: ray-logs
+              emptyDir: {}
+
+    - groupName: gpu-workers
+      replicas: 0
+      minReplicas: 0
+      maxReplicas: 4
+      rayStartParams:
+        num-gpus: "1"
+      template:
+        metadata:
+          labels:
+            app: archon
+            component: ray-worker-gpu
+        spec:
+          containers:
+            - name: ray-worker
+              image: rayproject/ray:2.30.0-gpu
+              resources:
+                requests:
+                  cpu: "4"
+                  memory: "16Gi"
+                  nvidia.com/gpu: "1"
+                limits:
+                  cpu: "8"
+                  memory: "32Gi"
+                  nvidia.com/gpu: "1"
+              volumeMounts:
+                - name: ray-logs
+                  mountPath: /tmp/ray
+          tolerations:
+            - key: nvidia.com/gpu
+              operator: Exists
+              effect: NoSchedule
+          volumes:
+            - name: ray-logs
+              emptyDir: {}

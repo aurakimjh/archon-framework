@@ -1,0 +1,21 @@
+apiVersion: ray.io/v1
+kind: RayCluster
+metadata:
+  name: archon-ray
+  namespace: archon
+  annotations:
+    ray.io/enable-autoscaling: "true"
+spec:
+  autoscalerOptions:
+    upscalingMode: Default
+    idleTimeoutSeconds: 300
+    resources:
+      requests:
+        cpu: "500m"
+        memory: "512Mi"
+      limits:
+        cpu: "1"
+        memory: "1Gi"
+    env:
+      - name: RAY_AUTOSCALER_IDLE_TIMEOUT_S
+        value: "300"

@@ -151,3 +151,68 @@ class PathGuardError(GuardrailError):
     def __init__(self, paths: list[str]) -> None:
         self.paths = paths
         super().__init__(f"Protected path access blocked: {paths}")
+
+
+# --- Observability ---
+
+
+class ObservabilityError(ArchonError):
+    """Observability 관련 예외."""
+
+
+class TracingBackendError(ObservabilityError):
+    """트레이싱 백엔드 오류."""
+
+
+# --- Benchmark ---
+
+
+class BenchmarkError(ArchonError):
+    """벤치마크 관련 예외."""
+
+
+class BenchmarkTimeoutError(BenchmarkError):
+    """벤치마크 실행 타임아웃."""
+
+
+# --- Evolution ---
+
+
+class EvolutionError(ArchonError):
+    """Self-Evolving Loop 관련 예외."""
+
+
+# --- Dashboard ---
+
+
+class DashboardError(ArchonError):
+    """대시보드 관련 예외."""
+
+
+# --- KubeRay ---
+
+
+class KubeRayError(RuntimeSetupError):
+    """KubeRay 관련 예외."""
+
+
+class KubeRayDeployError(KubeRayError):
+    """KubeRay 클러스터 배포 실패."""
+
+
+# --- Hybrid ---
+
+
+class HybridSchedulingError(RuntimeSetupError):
+    """하이브리드 스케줄링 예외."""
+
+
+class CloudBudgetExceededError(HybridSchedulingError):
+    """클라우드 예산 초과."""
+
+    def __init__(self, daily_spent: float, daily_limit: float) -> None:
+        self.daily_spent = daily_spent
+        self.daily_limit = daily_limit
+        super().__init__(
+            f"Cloud budget exceeded: ${daily_spent:.2f} / ${daily_limit:.2f} daily"
+        )
