@@ -4,8 +4,8 @@ from __future__ import annotations
 
 import importlib
 import logging
+from collections.abc import Callable
 from dataclasses import dataclass
-from typing import Callable
 
 from src.errors import ArchonError
 

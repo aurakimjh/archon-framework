@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import logging
+import os
 from pathlib import Path
 from typing import Any
 
@@ -69,9 +70,14 @@ class DashboardApp:
 
         app = FastAPI(title="Archon Dashboard", version="0.1.0")
 
+        cors_origins_env = os.environ.get("ARCHON_CORS_ORIGINS", "*")
+        cors_origins = [
+            o.strip() for o in cors_origins_env.split(",") if o.strip()
+        ] or ["*"]
+
         app.add_middleware(
             CORSMiddleware,
-            allow_origins=["*"],
+            allow_origins=cors_origins,
             allow_credentials=True,
             allow_methods=["*"],
             allow_headers=["*"],

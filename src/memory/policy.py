@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 import logging
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 from enum import StrEnum
 
 from pydantic import BaseModel, Field
@@ -146,7 +146,10 @@ class MemoryAccessController:
             allowed = self._in_whitelist(target_project_id, policy.allowed_read_projects)
             return AccessDecision(
                 allowed=allowed,
-                reason="whitelist check" if allowed else f"[{target_project_id}] not in allowed_read_projects",
+                reason=(
+                    "whitelist check" if allowed
+                    else f"[{target_project_id}] not in allowed_read_projects"
+                ),
                 source_project=source,
                 target_project=target_project_id,
                 operation=operation,
@@ -160,7 +163,10 @@ class MemoryAccessController:
             allowed = self._in_whitelist(target_project_id, whitelist)
             return AccessDecision(
                 allowed=allowed,
-                reason="whitelist check" if allowed else f"[{target_project_id}] not in allowed_{operation}_projects",
+                reason=(
+                    "whitelist check" if allowed
+                    else f"[{target_project_id}] not in allowed_{operation}_projects"
+                ),
                 source_project=source,
                 target_project=target_project_id,
                 operation=operation,

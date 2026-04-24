@@ -9,7 +9,7 @@ from typing import Any
 
 from src.healing.diagnostics import DiagnosticRegistry
 from src.healing.health_monitor import AgentHealthStatus, HealthMonitorRegistry
-from src.healing.self_healer import HealingConfig, RecoveryAction, SelfHealerRegistry
+from src.healing.self_healer import RecoveryAction, SelfHealerRegistry
 from src.log import get_logger
 
 slog = get_logger(__name__)

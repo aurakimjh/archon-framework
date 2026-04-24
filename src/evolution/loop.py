@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
+from collections.abc import Callable
 
 from src.evolution.analyzer import PatternAnalyzer
 from src.evolution.collector import MetricsCollector
@@ -24,6 +25,7 @@ class EvolutionLoop:
         analyzer: PatternAnalyzer | None = None,
         tuner: ThresholdTuner | None = None,
         config: EvolutionConfig | None = None,
+        on_policy_updated: Callable[[object, list[TuningAction]], None] | None = None,
     ) -> None:
         self._collector = collector
         self._config = config or EvolutionConfig()
@@ -32,6 +34,7 @@ class EvolutionLoop:
         self._running = False
         self._task: asyncio.Task | None = None
         self._cycle_count = 0
+        self._on_policy_updated = on_policy_updated
 
     @property
     def is_running(self) -> bool:
@@ -72,7 +75,15 @@ class EvolutionLoop:
         evaluated = self._tuner.evaluate_actions(actions)
 
         if policy is not None:
-            self._tuner.apply_to_policy(evaluated, policy)
+            applied = self._tuner.apply_to_policy(evaluated, policy)
+            if applied and self._on_policy_updated:
+                try:
+                    self._on_policy_updated(policy, applied)
+                except Exception:
+                    logger.warning(
+                        "on_policy_updated callback failed",
+                        exc_info=True,
+                    )
 
         self._cycle_count += 1
         _slog.info(

@@ -4,7 +4,6 @@ from __future__ import annotations
 
 import logging
 
-from src.log import get_logger, pipeline_context
 from src.agents.backend import BackendAgent
 from src.agents.base import BaseAgent
 from src.agents.devops import DevOpsAgent
@@ -14,6 +13,7 @@ from src.agents.reviewer import ReviewerAgent
 from src.agents.tester import TesterAgent
 from src.gate.evaluator import evaluate_gate
 from src.gate.models import GateDecision
+from src.log import get_logger
 from src.memory.context_injector import MemoryStore
 from src.notifications.base import GateEvent, Notifier
 from src.orchestrator.handoff import (
@@ -63,10 +63,12 @@ class Orchestrator:
         memory: MemoryStore | None = None,
         task_chains: dict[str, list[str]] | None = None,
         notifier: Notifier | None = None,
+        tracing_middleware: object | None = None,
     ) -> None:
         self.memory = memory or MemoryStore()
         self._task_chains = task_chains or DEFAULT_TASK_CHAINS
         self._notifier = notifier
+        self._tracing = tracing_middleware
 
     async def process_handoff(
         self,
@@ -80,6 +82,15 @@ class Orchestrator:
         """
         max_retries = registry.quality_policy.max_retry_before_escalation
         current_handoff = handoff
+
+        # --- 트레이싱: 파이프라인 스팬 시작 ---
+        _pipeline_span = None
+        if self._tracing and hasattr(self._tracing, "start_pipeline_trace"):
+            _pipeline_span = self._tracing.start_pipeline_trace(
+                project_id=handoff.project_context.project_id,
+                task_id=handoff.task.task_id,
+            )
+            self._tracing._current_pipeline_span = _pipeline_span
 
         for attempt in range(max_retries + 1):
             current_handoff.envelope.retry_count = attempt
@@ -105,6 +116,7 @@ class Orchestrator:
             # 2. Gate에 따른 분기
             if gate == GateDecision.AUTO_PASS:
                 await self._handle_auto_pass(result, registry)
+                self._end_pipeline_span(_pipeline_span, result)
                 return result
 
             if gate == GateDecision.L1_REWORK:
@@ -130,22 +142,39 @@ class Orchestrator:
                     )
                     result.quality_gates.gate_decision = GateDecision.L2_HUMAN
                     await self._handle_human_gate(result, registry, escalated=True)
+                    self._end_pipeline_span(_pipeline_span, result)
                     return result
 
             # L2, L3, L4는 루프 중단
             if gate == GateDecision.L2_HUMAN:
                 await self._handle_human_gate(result, registry)
+                self._end_pipeline_span(_pipeline_span, result)
                 return result
 
             if gate == GateDecision.L3_HALT:
                 await self._handle_halt(result, registry)
+                self._end_pipeline_span(_pipeline_span, result)
                 return result
 
             if gate == GateDecision.L4_DEPLOY:
                 await self._handle_deploy_gate(result, registry)
+                self._end_pipeline_span(_pipeline_span, result)
                 return result
 
+        self._end_pipeline_span(_pipeline_span, result)  # type: ignore[possibly-undefined]
         return result  # type: ignore[possibly-undefined]
+
+    def _end_pipeline_span(
+        self,
+        span: object | None,
+        result: HandoffArtifact,
+    ) -> None:
+        """파이프라인 트레이싱 스팬을 종료한다."""
+        if span and self._tracing and hasattr(self._tracing, "end_span"):
+            gate = str(result.quality_gates.gate_decision)
+            self._tracing.end_span(
+                span, output={"gate_decision": gate},
+            )
 
     async def _execute_pipeline(
         self,

@@ -2,15 +2,14 @@
 
 from __future__ import annotations
 
+import logging
 from collections.abc import Callable
 from dataclasses import dataclass
 from typing import Any
 
-import logging
-
 from src.gate.evaluator import evaluate_gate
 from src.gate.models import GateDecision
-from src.log import get_logger, pipeline_context
+from src.log import get_logger
 from src.orchestrator.handoff import (
     Artifacts,
     ChangedFile,

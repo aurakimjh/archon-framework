@@ -6,7 +6,7 @@ import asyncio
 import logging
 import time
 from collections.abc import Callable
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 from enum import StrEnum
 from typing import Any
 
@@ -68,7 +68,9 @@ class CircuitBreaker:
     def failure_count(self) -> int:
         return self._failure_count
 
-    async def call(self, fn: Callable[[], Any], *, fallback: Callable[[], Any] | None = None) -> Any:
+    async def call(
+        self, fn: Callable[[], Any], *, fallback: Callable[[], Any] | None = None,
+    ) -> Any:
         """보호된 호출을 실행한다.
 
         OPEN이면 CircuitOpenError를 발생시키거나 fallback을 호출한다.
@@ -93,7 +95,7 @@ class CircuitBreaker:
             result = await fn()
             await self._on_success()
             return result
-        except Exception as exc:
+        except Exception:
             await self._on_failure()
             raise
 

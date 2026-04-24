@@ -6,8 +6,6 @@ import re
 import time
 from typing import Any
 
-import structlog
-
 # --- 민감 정보 마스킹 패턴 ---
 
 _MASK_PATTERNS: list[tuple[str, re.Pattern[str]]] = [

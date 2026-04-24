@@ -3,8 +3,9 @@
 from __future__ import annotations
 
 import contextlib
+from collections.abc import Iterator
 from contextvars import ContextVar
-from typing import Any, Iterator
+from typing import Any
 
 import structlog
 

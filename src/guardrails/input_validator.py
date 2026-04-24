@@ -68,7 +68,7 @@ _INJECTION_PATTERNS: list[tuple[str, re.Pattern[str]]] = [
 class InputViolation:
     """탐지된 입력 검증 위반."""
 
-    violation_type: str       # "sensitive_data" | "prompt_injection" | "token_limit" | "forbidden_keyword"
+    violation_type: str       # sensitive_data | prompt_injection | token_limit | forbidden_keyword
     pattern_name: str         # 구체적인 패턴 이름
     severity: str             # "high" | "medium" | "low"
     excerpt: str              # 탐지된 텍스트 일부 (최대 80자, 마스킹)
@@ -131,7 +131,10 @@ class InputValidator:
                 violation_type="token_limit",
                 pattern_name="max_input_tokens",
                 severity="high",
-                excerpt=f"estimated {token_estimate} tokens (limit: {self._policy.max_input_tokens})",
+                excerpt=(
+                    f"estimated {token_estimate} tokens"
+                    f" (limit: {self._policy.max_input_tokens})"
+                ),
                 location="full_input",
             ))
 

@@ -7,10 +7,16 @@ import json
 import logging
 import re
 from collections.abc import AsyncIterator
+from typing import Any
 
 import litellm
 
-from src.errors import InputValidationError, OutputValidationError, PathGuardError, TokenBudgetExceededError
+from src.errors import (
+    InputValidationError,
+    OutputValidationError,
+    PathGuardError,
+    TokenBudgetExceededError,
+)
 from src.guardrails.input_validator import InputValidator
 from src.guardrails.output_validator import OutputValidator
 from src.guardrails.path_guard import PathGuard
@@ -58,6 +64,7 @@ class BaseAgent(abc.ABC):
         token_budget: TokenBudgetTracker | None = None,
         health_monitor: AgentHealthMonitor | None = None,
         diagnostician: AgentDiagnostician | None = None,
+        tracing_middleware: Any | None = None,
     ) -> None:
         self.role = role
         self._a2a_router = a2a_router
@@ -65,6 +72,7 @@ class BaseAgent(abc.ABC):
         self._token_budget = token_budget
         self._health_monitor = health_monitor
         self._diagnostician = diagnostician
+        self._tracing = tracing_middleware
         # 구조화 로거 (역할 컨텍스트 고정)
         self.slog = get_logger(__name__, agent_role=str(role))
 
@@ -75,6 +83,7 @@ class BaseAgent(abc.ABC):
     ) -> HandoffArtifact:
         """태스크를 실행하고 다음 핸드오프를 생성한다."""
         import time
+
         from src.memory.compressor import compress_handoff
 
         model = registry.get_model_for_role(self.role)
@@ -100,6 +109,15 @@ class BaseAgent(abc.ABC):
         # --- 가드레일: 토큰 예산 사전 확인 ---
         self._check_token_budget(handoff.task.task_id)
 
+        # --- 트레이싱: 에이전트 스팬 시작 ---
+        _span = None
+        if self._tracing and hasattr(self._tracing, "start_agent_span"):
+            _parent = getattr(self._tracing, "_current_pipeline_span", None)
+            if _parent:
+                _span = self._tracing.start_agent_span(
+                    parent=_parent, agent_role=str(self.role), model=model,
+                )
+
         _start = time.perf_counter()
         try:
             response = await litellm.acompletion(
@@ -123,6 +141,8 @@ class BaseAgent(abc.ABC):
                 )
             if self._diagnostician:
                 self._diagnostician.record_error(str(exc))
+            if _span and self._tracing:
+                self._tracing.end_span(_span, error=str(exc))
             raise
 
         _latency_ms = (time.perf_counter() - _start) * 1000
@@ -142,6 +162,19 @@ class BaseAgent(abc.ABC):
                 task_id=handoff.task.task_id,
                 input_tokens=inp_tokens,
                 output_tokens=out_tokens,
+            )
+
+        # --- 트레이싱: LLM 호출 기록 + 스팬 종료 ---
+        if _span and self._tracing:
+            self._tracing.record_llm_call(
+                span=_span,
+                model=model,
+                input_tokens=inp_tokens,
+                output_tokens=out_tokens,
+                latency_ms=_latency_ms,
+            )
+            self._tracing.end_span(
+                _span, output={"output_tokens": out_tokens},
             )
 
         result = self._build_handoff_result(handoff, result_text)
@@ -340,7 +373,8 @@ class BaseAgent(abc.ABC):
             raise PathGuardError(guard_result.blocked_paths)
         if guard_result.requires_human_gate:
             logger.warning(
-                "PathGuard [%s]: config/sensitive file change detected — Human Gate recommended: %s",
+                "PathGuard [%s]: config/sensitive file change detected"
+                " — Human Gate recommended: %s",
                 self.role,
                 guard_result.config_changes,
             )

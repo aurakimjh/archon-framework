@@ -122,7 +122,12 @@ class PathGuard:
 
         # 2. GitConfig.protected_paths
         for protected in self._protected_paths:
-            if path.startswith(protected) or path == protected or self._path_matches(path, protected):
+            matched = (
+                path.startswith(protected)
+                or path == protected
+                or self._path_matches(path, protected)
+            )
+            if matched:
                 found.append(PathViolation(
                     path=path,
                     violation_type="protected_path",

@@ -127,7 +127,8 @@ class TokenBudgetTracker:
         today = date.today().isoformat()
         status = self.get_status(today)
 
-        if self._policy.per_task_token_limit > 0 and estimated_tokens > self._policy.per_task_token_limit:
+        per_task_limit = self._policy.per_task_token_limit
+        if per_task_limit > 0 and estimated_tokens > per_task_limit:
             logger.warning(
                 "TokenBudget [%s/%s]: estimated %d tokens exceeds per-task limit %d",
                 self._project_id,

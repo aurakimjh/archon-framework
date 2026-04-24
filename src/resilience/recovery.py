@@ -7,7 +7,7 @@ from dataclasses import dataclass, field
 from enum import StrEnum
 from typing import Any
 
-from src.resilience.circuit_breaker import CircuitBreaker, CircuitBreakerRegistry, CircuitOpenError
+from src.resilience.circuit_breaker import CircuitBreakerRegistry
 from src.resilience.fallback import FallbackConfig, FallbackMode, FallbackStrategy
 from src.resilience.retry import RetryPolicy, RetryResult, retry_async
 

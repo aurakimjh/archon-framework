@@ -9,7 +9,7 @@ from collections.abc import Callable
 from dataclasses import dataclass, field
 from typing import Any, TypeVar
 
-from src.errors import AgentError, ArchonError
+from src.errors import AgentError
 
 logger = logging.getLogger(__name__)
 

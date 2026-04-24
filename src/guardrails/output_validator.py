@@ -17,13 +17,25 @@ _DANGEROUS_CODE_PATTERNS: list[tuple[str, re.Pattern[str], str]] = [
     ("rm_rf", re.compile(r"\brm\s+-[^\s]*r[^\s]*f\b|\brm\s+-rf\b", re.IGNORECASE), "high"),
     ("drop_table", re.compile(r"\bDROP\s+TABLE\b", re.IGNORECASE), "high"),
     ("truncate_table", re.compile(r"\bTRUNCATE\s+TABLE\b", re.IGNORECASE), "high"),
-    ("delete_where_1", re.compile(r"\bDELETE\s+FROM\s+\w+\s+WHERE\s+1\s*=\s*1", re.IGNORECASE), "high"),
+    (
+        "delete_where_1",
+        re.compile(r"\bDELETE\s+FROM\s+\w+\s+WHERE\s+1\s*=\s*1", re.IGNORECASE),
+        "high",
+    ),
     ("eval_exec", re.compile(r"\beval\s*\(|exec\s*\(", re.IGNORECASE), "medium"),
-    ("subprocess_shell", re.compile(r"subprocess\.\w+\([^)]*shell\s*=\s*True", re.IGNORECASE), "medium"),
+    (
+        "subprocess_shell",
+        re.compile(r"subprocess\.\w+\([^)]*shell\s*=\s*True", re.IGNORECASE),
+        "medium",
+    ),
     ("os_system", re.compile(r"\bos\.system\s*\(", re.IGNORECASE), "medium"),
     ("pickle_load", re.compile(r"\bpickle\.loads?\s*\(", re.IGNORECASE), "medium"),
     ("yaml_unsafe_load", re.compile(r"\byaml\.load\s*\([^)]*\)", re.IGNORECASE), "medium"),
-    ("format_string_injection", re.compile(r'%\s*\(\s*\w+\s*\)\s*[sdf]|\.format\s*\([^)]*\w+\s*=', re.IGNORECASE), "low"),
+    (
+        "format_string_injection",
+        re.compile(r'%\s*\(\s*\w+\s*\)\s*[sdf]|\.format\s*\([^)]*\w+\s*=', re.IGNORECASE),
+        "low",
+    ),
 ]
 
 # --- 보안 취약점 패턴 ---
