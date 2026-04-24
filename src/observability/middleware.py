@@ -141,6 +141,17 @@ def create_tracer_from_config(config: Any) -> ArchonTracer:
         if tracer.is_available:
             tracers.append(tracer)
 
+    if config.use_aitop:
+        from src.observability.aitop_backend import AitopTracer
+
+        tracer = AitopTracer(
+            server_url=config.aitop_server_url,
+            project_token=config.aitop_project_token,
+            service_name=config.aitop_service_name,
+            batch_size=config.aitop_batch_size,
+        )
+        tracers.append(tracer)
+
     if not tracers:
         return NoOpTracer()
 

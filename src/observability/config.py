@@ -13,7 +13,9 @@ class TracingBackend(StrEnum):
     NONE = "none"
     LANGSMITH = "langsmith"
     LANGFUSE = "langfuse"
+    AITOP = "aitop"
     BOTH = "both"
+    ALL = "all"
 
 
 class TracingConfig(BaseModel):
@@ -31,6 +33,12 @@ class TracingConfig(BaseModel):
     langfuse_public_key: str | None = None
     langfuse_secret_key: str | None = None
 
+    # AITOP (aiservice-monitoring)
+    aitop_server_url: str = "http://localhost:8080"
+    aitop_project_token: str | None = None
+    aitop_service_name: str = "archon-framework"
+    aitop_batch_size: int = Field(default=20, ge=1, le=200)
+
     # 공통
     trace_all_llm_calls: bool = True
     trace_pipeline: bool = True
@@ -43,8 +51,16 @@ class TracingConfig(BaseModel):
 
     @property
     def use_langsmith(self) -> bool:
-        return self.backend in (TracingBackend.LANGSMITH, TracingBackend.BOTH)
+        return self.backend in (
+            TracingBackend.LANGSMITH, TracingBackend.BOTH, TracingBackend.ALL,
+        )
 
     @property
     def use_langfuse(self) -> bool:
-        return self.backend in (TracingBackend.LANGFUSE, TracingBackend.BOTH)
+        return self.backend in (
+            TracingBackend.LANGFUSE, TracingBackend.BOTH, TracingBackend.ALL,
+        )
+
+    @property
+    def use_aitop(self) -> bool:
+        return self.backend in (TracingBackend.AITOP, TracingBackend.ALL)

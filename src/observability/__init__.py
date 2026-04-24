@@ -1,5 +1,6 @@
 """Archon Observability — LLM 트레이싱 및 파이프라인 모니터링."""
 
+from src.observability.aitop_backend import AitopTracer
 from src.observability.config import TracingBackend, TracingConfig
 from src.observability.middleware import TracingMiddleware, create_tracer_from_config
 from src.observability.span import LLMCallRecord, SpanContext
@@ -19,6 +20,7 @@ __all__ = [
     "NoOpTracer",
     "CompositeTracer",
     "SamplingTracer",
+    "AitopTracer",
     # span
     "SpanContext",
     "LLMCallRecord",

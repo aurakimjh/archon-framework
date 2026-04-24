@@ -453,3 +453,248 @@ class TestCreateTracerFromConfig:
     def test_non_config_object_returns_noop(self):
         tracer = create_tracer_from_config("invalid")
         assert isinstance(tracer, NoOpTracer)
+
+    def test_aitop_backend_creates_tracer(self):
+        cfg = TracingConfig(
+            backend=TracingBackend.AITOP,
+            aitop_server_url="http://localhost:8080",
+            aitop_service_name="test-svc",
+        )
+        tracer = create_tracer_from_config(cfg)
+        from src.observability.aitop_backend import AitopTracer
+
+        assert isinstance(tracer, AitopTracer)
+
+    def test_all_backend_creates_composite(self):
+        cfg = TracingConfig(
+            backend=TracingBackend.ALL,
+            aitop_server_url="http://localhost:8080",
+        )
+        tracer = create_tracer_from_config(cfg)
+        # AITOP은 항상 가용, LangSmith/Langfuse는 패키지 미설치 시 불가
+        # 최소 AitopTracer 1개는 포함
+        from src.observability.aitop_backend import AitopTracer
+
+        assert isinstance(tracer, (AitopTracer, CompositeTracer))
+
+
+# ---------------------------------------------------------------------------
+# AitopTracer
+# ---------------------------------------------------------------------------
+
+
+class TestAitopTracer:
+    def _make_tracer(self, **kwargs):
+        from src.observability.aitop_backend import AitopTracer
+
+        defaults = {
+            "server_url": "http://localhost:8080",
+            "service_name": "test-archon",
+            "batch_size": 5,
+        }
+        defaults.update(kwargs)
+        return AitopTracer(**defaults)
+
+    def test_is_available(self):
+        tracer = self._make_tracer()
+        assert tracer.is_available is True
+
+    def test_start_trace(self):
+        tracer = self._make_tracer()
+        span = tracer.start_trace("pipeline:test", {"project": "p1"})
+        assert span.name == "pipeline:test"
+        assert span.metadata["project"] == "p1"
+
+    def test_start_span_inherits_trace_id(self):
+        tracer = self._make_tracer()
+        parent = tracer.start_trace("pipeline")
+        child = tracer.start_span(parent, "agent:backend", {"model": "llama3"})
+        assert child.trace_id == parent.trace_id
+        assert child.parent_span_id == parent.span_id
+
+    def test_end_span_adds_to_buffer(self):
+        tracer = self._make_tracer()
+        span = tracer.start_trace("test")
+        tracer.end_span(span, output={"result": "ok"})
+        assert len(tracer._span_buffer) == 1
+        assert tracer._span_buffer[0]["name"] == "test"
+
+    def test_end_span_with_error(self):
+        tracer = self._make_tracer()
+        span = tracer.start_trace("test")
+        tracer.end_span(span, error="timeout")
+        data = tracer._span_buffer[0]
+        assert data["status"]["code"] == 2
+        assert data["status"]["message"] == "timeout"
+
+    def test_record_llm_call_adds_metrics(self):
+        tracer = self._make_tracer()
+        span = tracer.start_trace("test")
+        record = LLMCallRecord(
+            span_id=span.span_id,
+            model="llama3:8b",
+            input_tokens=100,
+            output_tokens=200,
+            latency_ms=500.0,
+            cost_usd=0.01,
+        )
+        tracer.record_llm_call(span, record)
+        assert len(tracer._metric_buffer) == 4  # 4 metrics
+
+    def test_flush_sends_traces(self):
+        tracer = self._make_tracer()
+        span = tracer.start_trace("test")
+        tracer.end_span(span)
+
+        mock_resp = MagicMock()
+        mock_resp.status_code = 200
+
+        with patch("src.observability.aitop_backend.httpx.post", return_value=mock_resp) as mock_post:
+            tracer.flush()
+
+        mock_post.assert_called_once()
+        call_args = mock_post.call_args
+        assert "/v1/traces" in call_args[0][0]
+        assert "resourceSpans" in call_args[1]["json"]
+        assert tracer._span_buffer == []
+
+    def test_flush_sends_metrics(self):
+        tracer = self._make_tracer()
+        span = tracer.start_trace("test")
+        record = LLMCallRecord(
+            span_id=span.span_id,
+            model="test-model",
+            input_tokens=10,
+            output_tokens=20,
+            latency_ms=100.0,
+        )
+        tracer.record_llm_call(span, record)
+
+        mock_resp = MagicMock()
+        mock_resp.status_code = 200
+
+        with patch("src.observability.aitop_backend.httpx.post", return_value=mock_resp) as mock_post:
+            tracer.flush()
+
+        mock_post.assert_called_once()
+        call_args = mock_post.call_args
+        assert "/v1/metrics" in call_args[0][0]
+        assert tracer._metric_buffer == []
+
+    def test_auto_flush_on_batch_full(self):
+        tracer = self._make_tracer(batch_size=2)
+
+        mock_resp = MagicMock()
+        mock_resp.status_code = 200
+
+        with patch("src.observability.aitop_backend.httpx.post", return_value=mock_resp) as mock_post:
+            s1 = tracer.start_trace("span1")
+            tracer.end_span(s1)  # buffer=1, no flush
+            assert mock_post.call_count == 0
+
+            s2 = tracer.start_trace("span2")
+            tracer.end_span(s2)  # buffer=2 >= batch_size, auto flush
+            assert mock_post.call_count == 1
+
+    def test_flush_handles_http_error(self):
+        import httpx as _httpx
+
+        tracer = self._make_tracer()
+        span = tracer.start_trace("test")
+        tracer.end_span(span)
+
+        with patch(
+            "src.observability.aitop_backend.httpx.post",
+            side_effect=_httpx.ConnectError("refused"),
+        ):
+            tracer.flush()  # should not raise
+
+        assert tracer._available is False
+        assert tracer._span_buffer == []
+
+    def test_shutdown_flushes_and_clears(self):
+        tracer = self._make_tracer()
+        span = tracer.start_trace("test")
+
+        mock_resp = MagicMock()
+        mock_resp.status_code = 200
+
+        with patch("src.observability.aitop_backend.httpx.post", return_value=mock_resp):
+            tracer.shutdown()
+
+        assert tracer._spans == {}
+
+    def test_project_token_in_headers(self):
+        tracer = self._make_tracer(project_token="secret-token-123")
+        headers = tracer._headers()
+        assert headers["Authorization"] == "Bearer secret-token-123"
+
+    def test_no_token_no_auth_header(self):
+        tracer = self._make_tracer(project_token=None)
+        headers = tracer._headers()
+        assert "Authorization" not in headers
+
+    def test_build_resource(self):
+        tracer = self._make_tracer(service_name="my-archon")
+        resource = tracer._build_resource()
+        attrs = {a["key"]: a["value"]["stringValue"] for a in resource["attributes"]}
+        assert attrs["service.name"] == "my-archon"
+        assert attrs["telemetry.sdk.name"] == "archon"
+
+    def test_span_data_format(self):
+        tracer = self._make_tracer()
+        span = tracer.start_trace("pipeline:proj/task", {"project_id": "p1"})
+        time.sleep(0.01)
+        tracer.end_span(span, output={"gate": "AUTO_PASS"})
+
+        data = tracer._span_buffer[0]
+        assert data["traceId"] == span.trace_id
+        assert data["spanId"] == span.span_id
+        assert data["name"] == "pipeline:proj/task"
+        assert data["startTimeUnixNano"] > 0
+        assert data["endTimeUnixNano"] > data["startTimeUnixNano"]
+
+        attr_keys = [a["key"] for a in data["attributes"]]
+        assert "project_id" in attr_keys
+        assert "output.gate" in attr_keys
+
+
+class TestTracingConfigAitop:
+    def test_aitop_backend(self):
+        cfg = TracingConfig(backend=TracingBackend.AITOP)
+        assert cfg.is_enabled is True
+        assert cfg.use_aitop is True
+        assert cfg.use_langsmith is False
+        assert cfg.use_langfuse is False
+
+    def test_all_backend(self):
+        cfg = TracingConfig(backend=TracingBackend.ALL)
+        assert cfg.use_aitop is True
+        assert cfg.use_langsmith is True
+        assert cfg.use_langfuse is True
+
+    def test_aitop_config_defaults(self):
+        cfg = TracingConfig(backend=TracingBackend.AITOP)
+        assert cfg.aitop_server_url == "http://localhost:8080"
+        assert cfg.aitop_service_name == "archon-framework"
+        assert cfg.aitop_batch_size == 20
+        assert cfg.aitop_project_token is None
+
+    def test_aitop_config_custom(self):
+        cfg = TracingConfig(
+            backend=TracingBackend.AITOP,
+            aitop_server_url="http://aitop.internal:8080",
+            aitop_project_token="my-token",
+            aitop_service_name="my-service",
+            aitop_batch_size=50,
+        )
+        assert cfg.aitop_server_url == "http://aitop.internal:8080"
+        assert cfg.aitop_project_token == "my-token"
+        assert cfg.aitop_batch_size == 50
+
+    def test_both_backend_unchanged(self):
+        """기존 BOTH 백엔드 동작 유지 확인."""
+        cfg = TracingConfig(backend=TracingBackend.BOTH)
+        assert cfg.use_langsmith is True
+        assert cfg.use_langfuse is True
+        assert cfg.use_aitop is False
