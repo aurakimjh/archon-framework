@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import logging
 
+from src.log import get_logger, pipeline_context
 from src.agents.backend import BackendAgent
 from src.agents.base import BaseAgent
 from src.agents.devops import DevOpsAgent
@@ -23,6 +24,7 @@ from src.orchestrator.handoff import (
 from src.registry.models import AgentRole, ProjectRegistry
 
 logger = logging.getLogger(__name__)
+slog = get_logger(__name__)
 
 # 에이전트 풀 (무상태 — 인스턴스 재사용 가능)
 AGENT_POOL: dict[str, BaseAgent] = {
@@ -87,6 +89,13 @@ class Orchestrator:
                 attempt + 1,
                 max_retries + 1,
                 current_handoff.task.task_id,
+            )
+            slog.info(
+                "orchestrator_loop",
+                attempt=attempt + 1,
+                max_attempts=max_retries + 1,
+                task_id=current_handoff.task.task_id,
+                project_id=current_handoff.project_context.project_id,
             )
 
             # 1. 에이전트 실행 + 리뷰 + Gate 판정
@@ -236,6 +245,7 @@ class Orchestrator:
     ) -> None:
         """AUTO_PASS — 자동 커밋/푸시."""
         logger.info("AUTO_PASS — proceeding to auto commit for [%s]", handoff.task.task_id)
+        slog.info("state_transition", state="AUTO_PASS", task_id=handoff.task.task_id)
 
         from src.runtime.git_executor import GitExecutor
 

@@ -4,12 +4,14 @@ from __future__ import annotations
 
 import logging
 
+from src.log import get_logger
 from src.orchestrator.handoff import QualityGates
 from src.registry.models import QualityPolicy
 
 from .models import GateDecision
 
 logger = logging.getLogger(__name__)
+slog = get_logger(__name__)
 
 
 def evaluate_gate(
@@ -56,6 +58,14 @@ def evaluate_gate(
 
     # 자동 통과
     logger.info("Gate: AUTO_PASS — all quality checks passed")
+    slog.info(
+        "gate_decision",
+        decision="AUTO_PASS",
+        review_score=quality.review_score,
+        coverage=quality.test_results.coverage_percent,
+        lint=quality.lint_result,
+        build=quality.build_result,
+    )
     return GateDecision.AUTO_PASS
 
 
@@ -76,6 +86,7 @@ def _check_l3_halt(quality: QualityGates, retry_count: int) -> bool:
 
     if reasons:
         logger.warning("Gate: L3_HALT — %s", "; ".join(reasons))
+        slog.warning("gate_decision", decision="L3_HALT", reasons=reasons)
         return True
     return False
 
@@ -113,6 +124,7 @@ def _check_l2_human(
 
     if reasons:
         logger.info("Gate: L2_HUMAN — %s", "; ".join(reasons))
+        slog.warning("gate_decision", decision="L2_HUMAN", reasons=reasons)
         return True
     return False
 
@@ -187,5 +199,6 @@ def _check_l1_rework(quality: QualityGates, policy: QualityPolicy) -> bool:
 
     if reasons:
         logger.info("Gate: L1_REWORK — %s", "; ".join(reasons))
+        slog.info("gate_decision", decision="L1_REWORK", reasons=reasons)
         return True
     return False

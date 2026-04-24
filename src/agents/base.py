@@ -16,6 +16,7 @@ from src.guardrails.output_validator import OutputValidator
 from src.guardrails.path_guard import PathGuard
 from src.guardrails.policy import GuardrailPolicy
 from src.guardrails.token_budget import TokenBudgetTracker
+from src.log import get_logger
 from src.mcp.a2a import A2AMessage, A2AMessageType, A2APriority, A2ARouter
 from src.orchestrator.handoff import (
     Artifacts,
@@ -29,6 +30,7 @@ from src.orchestrator.handoff import (
 from src.registry.models import AgentRole, ProjectRegistry
 
 logger = logging.getLogger(__name__)
+_slog = get_logger(__name__)
 
 # LLM 구조화 출력 태그
 _OUTPUT_TAG_PATTERN = re.compile(
@@ -57,6 +59,8 @@ class BaseAgent(abc.ABC):
         self._a2a_router = a2a_router
         self._guardrail_policy = guardrail_policy
         self._token_budget = token_budget
+        # 구조화 로거 (역할 컨텍스트 고정)
+        self.slog = get_logger(__name__, agent_role=str(role))
 
     async def execute(
         self,
@@ -73,11 +77,11 @@ class BaseAgent(abc.ABC):
         # 토큰 초과 시 자동 압축
         handoff = compress_handoff(handoff, max_context_tokens=max_ctx)
 
-        logger.info(
-            "Agent [%s] executing task [%s] with model [%s]",
-            self.role,
-            handoff.task.task_id,
-            model,
+        self.slog.info(
+            "agent_execute_start",
+            task_id=handoff.task.task_id,
+            model=model,
+            project_id=handoff.project_context.project_id,
         )
 
         system_prompt = self._build_system_prompt(handoff, registry)
@@ -110,19 +114,28 @@ class BaseAgent(abc.ABC):
 
         # --- 가드레일: 토큰 사용량 기록 ---
         usage = getattr(response, "usage", None)
+        inp_tokens = getattr(usage, "prompt_tokens", 0) if usage else 0
+        out_tokens = getattr(usage, "completion_tokens", 0) if usage else 0
         if usage and self._token_budget:
             self._token_budget.record(
                 agent_role=self.role,
                 model=model,
                 task_id=handoff.task.task_id,
-                input_tokens=getattr(usage, "prompt_tokens", 0),
-                output_tokens=getattr(usage, "completion_tokens", 0),
+                input_tokens=inp_tokens,
+                output_tokens=out_tokens,
             )
 
         result = self._build_handoff_result(handoff, result_text)
 
         # --- 가드레일: 경로 보호 확인 ---
         self._run_path_guard(result, registry)
+
+        self.slog.info(
+            "agent_execute_done",
+            task_id=handoff.task.task_id,
+            input_tokens=inp_tokens,
+            output_tokens=out_tokens,
+        )
 
         return result
 

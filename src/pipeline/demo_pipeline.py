@@ -6,8 +6,11 @@ from collections.abc import Callable
 from dataclasses import dataclass
 from typing import Any
 
+import logging
+
 from src.gate.evaluator import evaluate_gate
 from src.gate.models import GateDecision
+from src.log import get_logger, pipeline_context
 from src.orchestrator.handoff import (
     Artifacts,
     ChangedFile,
@@ -19,6 +22,9 @@ from src.orchestrator.handoff import (
     TestResults,
 )
 from src.registry.models import ProjectRegistry
+
+_log = logging.getLogger(__name__)
+slog = get_logger(__name__)
 
 # ---------------------------------------------------------------------------
 # Per-attempt mock data
@@ -260,9 +266,20 @@ class DemoPipeline:
         current = initial_handoff.model_copy(deep=True)
         tag = "[Mock] " if self.mock else ""
 
+        project_id = initial_handoff.project_context.project_id
+        task_id = initial_handoff.task.task_id
+        slog.info(
+            "pipeline_start",
+            project_id=project_id,
+            task_id=task_id,
+            scenario=self.scenario,
+            mock=self.mock,
+        )
+
         for attempt in range(max_retries + 1):
             current.envelope.retry_count = attempt
             self._emit("loop", f"Attempt {attempt + 1}/{max_retries + 1}")
+            slog.info("pipeline_attempt", attempt=attempt + 1, task_id=task_id)
 
             # 1. Backend
             self._emit("backend", f"{tag}BackendAgent 실행 중...")
