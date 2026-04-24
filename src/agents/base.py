@@ -179,6 +179,19 @@ class BaseAgent(abc.ABC):
 
         result = self._build_handoff_result(handoff, result_text)
 
+        # --- 스키마 자가 교정: 구조화 출력 실패 시 1회 재시도 ---
+        if (
+            "<archon-output>" in result_text
+            and not result.task.completed_summary.strip()
+        ):
+            corrected = await self._self_correct_output(
+                result_text, model, registry,
+            )
+            if corrected:
+                result = self._build_handoff_from_parsed(
+                    handoff, corrected, result_text,
+                )
+
         # --- 가드레일: 경로 보호 확인 ---
         self._run_path_guard(result, registry)
 
@@ -324,6 +337,35 @@ class BaseAgent(abc.ABC):
             quality_gates=QualityGates(),
         )
 
+    def _build_handoff_from_parsed(
+        self,
+        input_handoff: HandoffArtifact,
+        parsed: dict,
+        fallback_text: str,
+    ) -> HandoffArtifact:
+        """파싱된 구조화 데이터로 HandoffArtifact를 생성한다."""
+        return HandoffArtifact(
+            envelope=Envelope(
+                handoff_id=f"hf_{input_handoff.envelope.handoff_id}_out",
+                from_agent=self.role,
+                to_agent="reviewer",
+                parent_handoff_id=input_handoff.envelope.handoff_id,
+            ),
+            project_context=input_handoff.project_context,
+            task=Task(
+                task_id=input_handoff.task.task_id,
+                completed_summary=parsed.get(
+                    "summary", fallback_text[:500]
+                ),
+                decisions_made=parsed.get("decisions", []),
+                next_instructions="Review and validate the output.",
+            ),
+            artifacts=Artifacts(
+                changed_files=parsed.get("changed_files", []),
+            ),
+            quality_gates=QualityGates(),
+        )
+
     # --- 가드레일 헬퍼 ---
 
     def _run_input_validation(
@@ -440,15 +482,87 @@ class BaseAgent(abc.ABC):
         if not match:
             return {}
 
+        raw_json = match.group(1)
+        data = self._try_parse_json(raw_json)
+        if data is None:
+            return {}
+
+        return self._extract_structured_fields(data)
+
+    def _try_parse_json(self, raw: str) -> dict | None:
+        """JSON 파싱을 시도한다. 실패 시 None 반환."""
         try:
-            data = json.loads(match.group(1))
+            return json.loads(raw)
         except (json.JSONDecodeError, ValueError):
             logger.warning(
                 "Agent [%s] returned malformed archon-output JSON",
                 self.role,
             )
-            return {}
+            return None
 
+    async def _self_correct_output(
+        self,
+        malformed_text: str,
+        model: str,
+        registry: ProjectRegistry,
+    ) -> dict:
+        """스키마 위반 시 교정 메시지를 투입하여 1회 재시도한다.
+
+        LLM에 원래 출력과 기대 스키마를 보여주고 올바른 JSON을 재생성하도록 요청한다.
+        재시도도 실패하면 빈 dict를 반환한다.
+        """
+        correction_prompt = (
+            "Your previous output was malformed. "
+            "Please re-output ONLY the corrected JSON inside "
+            "<archon-output></archon-output> tags.\n\n"
+            "Expected schema:\n"
+            '{"summary": "string", '
+            '"changed_files": [{"path": "string", '
+            '"change_type": "added|modified|deleted", "reason": "string"}], '
+            '"decisions": [{"decision": "string", "reason": "string"}]}\n\n'
+            f"Your previous output:\n{malformed_text[:2000]}"
+        )
+
+        _slog.info("self_correction_attempt", agent_role=str(self.role))
+
+        try:
+            response = await litellm.acompletion(
+                model=model,
+                messages=[
+                    {
+                        "role": "system",
+                        "content": (
+                            "You are a JSON correction assistant. "
+                            "Output ONLY valid JSON inside "
+                            "<archon-output></archon-output> tags."
+                        ),
+                    },
+                    {"role": "user", "content": correction_prompt},
+                ],
+                max_tokens=2048,
+                temperature=0.0,
+            )
+            corrected = response.choices[0].message.content or ""
+            match = _OUTPUT_TAG_PATTERN.search(corrected)
+            if match:
+                data = self._try_parse_json(match.group(1))
+                if data is not None:
+                    _slog.info(
+                        "self_correction_success",
+                        agent_role=str(self.role),
+                    )
+                    return self._extract_structured_fields(data)
+        except Exception:
+            _slog.warning(
+                "self_correction_failed",
+                agent_role=str(self.role),
+            )
+
+        return {}
+
+    @staticmethod
+    def _extract_structured_fields(data: dict) -> dict:
+        """파싱된 JSON에서 구조화 필드를 추출한다."""
         result: dict = {}
 
         if "summary" in data:

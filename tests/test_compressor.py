@@ -2,8 +2,6 @@
 
 from __future__ import annotations
 
-import pytest
-
 from src.memory.compressor import (
     compress_decisions,
     compress_handoff,
@@ -12,7 +10,6 @@ from src.memory.compressor import (
     estimate_tokens,
 )
 from src.orchestrator.handoff import (
-    Artifacts,
     Decision,
     Envelope,
     HandoffArtifact,
@@ -22,7 +19,6 @@ from src.orchestrator.handoff import (
     ProjectContext,
     Task,
 )
-
 
 # --- estimate_tokens ---
 
@@ -188,3 +184,52 @@ class TestCompressHandoff:
         compress_handoff(handoff, max_context_tokens=500)
         assert handoff.task.completed_summary == original_summary
         assert len(handoff.task.decisions_made) == 20
+
+
+# --- token_gap 기반 정밀 압축 ---
+
+
+class TestPrecisionTruncation:
+    def test_token_gap_triggers_compression(self):
+        """token_gap > 0이면 정밀 타격 모드로 동작."""
+        handoff = _make_handoff(summary_len=5000, instructions_len=5000)
+        result = compress_handoff(handoff, max_context_tokens=50000, token_gap=2000)
+        # token_gap이 주어졌으므로 압축이 수행되어야 함
+        original_tokens = estimate_tokens(handoff.model_dump_json())
+        result_tokens = estimate_tokens(result.model_dump_json())
+        assert result_tokens < original_tokens
+
+    def test_token_gap_zero_no_extra_compression(self):
+        """token_gap=0이면 기존 동작과 동일."""
+        handoff = _make_handoff(summary_len=50, instructions_len=50)
+        result = compress_handoff(handoff, max_context_tokens=50000, token_gap=0)
+        assert result.task.completed_summary == handoff.task.completed_summary
+
+    def test_token_gap_precision(self):
+        """정밀 타격은 필요한 만큼만 제거한다."""
+        handoff = _make_handoff(summary_len=3000, instructions_len=3000)
+        original_tokens = estimate_tokens(handoff.model_dump_json())
+        # 소량 초과 시
+        small_gap = 100
+        result = compress_handoff(
+            handoff, max_context_tokens=50000, token_gap=small_gap
+        )
+        result_tokens = estimate_tokens(result.model_dump_json())
+        # 전체의 50% 이상을 제거하면 안 됨 (정밀 타격)
+        assert result_tokens > original_tokens * 0.5
+
+    def test_token_gap_large_removes_more(self):
+        """큰 token_gap은 더 공격적으로 압축."""
+        handoff = _make_handoff(
+            summary_len=5000, instructions_len=5000,
+            decision_count=15, pattern_count=10,
+        )
+        small_result = compress_handoff(
+            handoff, max_context_tokens=50000, token_gap=500
+        )
+        large_result = compress_handoff(
+            handoff, max_context_tokens=50000, token_gap=5000
+        )
+        small_tokens = estimate_tokens(small_result.model_dump_json())
+        large_tokens = estimate_tokens(large_result.model_dump_json())
+        assert large_tokens <= small_tokens
