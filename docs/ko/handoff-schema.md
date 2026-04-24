@@ -1,5 +1,7 @@
 # Handoff Artifact 스키마
 
+🇺🇸 [English](../en/handoff-schema.md)
+
 > 버전: 1.1.0 | 최종 수정: 2026-04-23
 
 ## 개요

@@ -1,5 +1,7 @@
 # Archon 시스템 아키텍처
 
+🇺🇸 [English](../en/architecture.md)
+
 > 버전: 1.1.0 | 최종 수정: 2026-04-23
 
 ## 개요

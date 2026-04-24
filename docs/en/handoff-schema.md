@@ -1,6 +1,8 @@
 # Handoff Artifact Schema
 
-> Version: 1.0.0 | Last updated: 2026-04-22
+🇰🇷 [한국어](../ko/handoff-schema.md)
+
+> Version: 1.1.0 | Last updated: 2026-04-23
 
 ## Overview
 
@@ -84,9 +86,16 @@ Source code: `src/orchestrator/handoff.py`
   "build_result": "passed",
   "security_scan": { "tool": "semgrep", "critical": 0, "high": 0, "medium": 1 },
   "review_score": 74,
+  "review_flags": [
+    { "severity": "medium", "category": "external_integration", "detail": "New Stripe integration" }
+  ],
+  "sop_compliance_score": 85,
   "gate_decision": "l2_human"
 }
 ```
+
+- `sop_compliance_score`: SOP adherence score (0–100). `null` skips the SOP check.
+- `gate_decision`: `auto_pass` | `l1_rework` | `l2_human` | `l3_halt` | `l4_deploy`
 
 ### human_gate_package
 

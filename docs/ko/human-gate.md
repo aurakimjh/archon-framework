@@ -1,5 +1,7 @@
 # Human Gate 설계
 
+🇺🇸 [English](../en/human-gate.md)
+
 > 버전: 1.1.0 | 최종 수정: 2026-04-23
 
 ## 개요
