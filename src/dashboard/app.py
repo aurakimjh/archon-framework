@@ -68,7 +68,7 @@ class DashboardApp:
                 "fastapi 패키지가 필요합니다: pip install archon-framework[dashboard]"
             )
 
-        app = FastAPI(title="Archon Dashboard", version="0.1.0")
+        app = FastAPI(title="Archon Dashboard", version="0.1.0a1")
 
         cors_origins_env = os.environ.get("ARCHON_CORS_ORIGINS", "*")
         cors_origins = [

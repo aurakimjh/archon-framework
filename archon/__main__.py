@@ -30,7 +30,7 @@ except ImportError as exc:
     print("Hint: run from project root or `pip install -e '.[dev]'`", file=sys.stderr)
     sys.exit(1)
 
-VERSION = "0.1.0"
+from archon import __version__ as VERSION
 
 # ---------------------------------------------------------------------------
 # Output helpers — rich if available, plain fallback otherwise

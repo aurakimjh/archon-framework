@@ -4,11 +4,26 @@ build-backend = "hatchling.build"
 
 [project]
 name = "archon-framework"
-version = "0.1.0"
+version = "0.1.0a1"
 description = "Multi-agent AI development platform"
 readme = "README.md"
 license = "MIT"
 requires-python = ">=3.11"
+authors = [
+    { name = "Aura Kim", email = "aura.kimjh@gmail.com" },
+]
+classifiers = [
+    "Development Status :: 3 - Alpha",
+    "Intended Audience :: Developers",
+    "License :: OSI Approved :: MIT License",
+    "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: 3.11",
+    "Programming Language :: Python :: 3.12",
+    "Programming Language :: Python :: 3.13",
+    "Topic :: Software Development :: Libraries :: Application Frameworks",
+    "Typing :: Typed",
+]
+keywords = ["ai", "multi-agent", "llm", "orchestration", "framework"]
 dependencies = [
     "pydantic>=2.0,<3.0",
     "litellm>=1.40",
@@ -20,6 +35,14 @@ dependencies = [
     "rich>=13.0",
     "structlog>=24.0",
 ]
+
+[project.urls]
+Homepage = "https://github.com/aurakimjh/archon-framework"
+Repository = "https://github.com/aurakimjh/archon-framework"
+Issues = "https://github.com/aurakimjh/archon-framework/issues"
+
+[project.scripts]
+archon = "archon.__main__:main"
 
 [project.optional-dependencies]
 dev = [
@@ -38,6 +61,9 @@ dashboard = [
     "uvicorn>=0.30",
     "websockets>=12.0",
 ]
+
+[tool.hatch.build.targets.wheel]
+packages = ["archon", "src"]
 
 [tool.ruff]
 target-version = "py311"
