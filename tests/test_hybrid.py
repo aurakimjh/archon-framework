@@ -9,6 +9,9 @@ from src.runtime.hybrid import (
     GPUResource,
     HybridCloudManager,
     HybridConfig,
+    PreemptionEvent,
+    PreemptionResult,
+    PreemptionStrategy,
     SchedulingStrategy,
 )
 
@@ -204,3 +207,213 @@ class TestSummary:
         assert summary["available_resources"] == 1
         assert summary["budget_ok"] is True
         assert summary["strategy"] == "local_first"
+
+
+# ---------------------------------------------------------------------------
+# Task Tracking
+# ---------------------------------------------------------------------------
+
+
+class TestTaskTracking:
+    def test_register_and_unregister_task(self):
+        mgr = HybridCloudManager(HybridConfig())
+        mgr.register_task("t1", "local-0")
+        assert mgr.get_active_tasks() == {"t1": "local-0"}
+        assert mgr.unregister_task("t1") is True
+        assert mgr.get_active_tasks() == {}
+
+    def test_unregister_unknown_task(self):
+        mgr = HybridCloudManager(HybridConfig())
+        assert mgr.unregister_task("nope") is False
+
+    @pytest.mark.asyncio
+    async def test_schedule_task_records_active(self):
+        mgr = HybridCloudManager(HybridConfig())
+        mgr.register_resource(_local_gpu(worker_id="l1"))
+        result = await mgr.schedule_task("t1", "backend")
+        assert result is not None
+        assert mgr.get_active_tasks()["t1"] == "l1"
+
+
+# ---------------------------------------------------------------------------
+# Preemption Handling
+# ---------------------------------------------------------------------------
+
+
+class TestPreemption:
+    @pytest.mark.asyncio
+    async def test_local_fallback_success(self):
+        cfg = HybridConfig(preemption_strategy=PreemptionStrategy.LOCAL_FALLBACK)
+        mgr = HybridCloudManager(cfg)
+        mgr.register_resource(_local_gpu(worker_id="local-0"))
+        mgr.register_resource(_cloud_gpu(worker_id="aws-0", is_spot=True))
+        mgr.register_task("t1", "aws-0")
+
+        event = PreemptionEvent(worker_id="aws-0", task_id="t1")
+        result = await mgr.handle_preemption(event)
+
+        assert result.success is True
+        assert result.strategy_used == PreemptionStrategy.LOCAL_FALLBACK
+        assert result.fallback_worker_id == "local-0"
+        assert mgr.get_active_tasks()["t1"] == "local-0"
+
+    @pytest.mark.asyncio
+    async def test_local_fallback_no_local(self):
+        cfg = HybridConfig(preemption_strategy=PreemptionStrategy.LOCAL_FALLBACK)
+        mgr = HybridCloudManager(cfg)
+        mgr.register_resource(_cloud_gpu(worker_id="aws-0", is_spot=True))
+        mgr.register_task("t1", "aws-0")
+
+        event = PreemptionEvent(worker_id="aws-0", task_id="t1")
+        result = await mgr.handle_preemption(event)
+
+        assert result.success is False
+        assert "No local resource" in result.detail
+
+    @pytest.mark.asyncio
+    async def test_migrate_to_another_cloud(self):
+        cfg = HybridConfig(preemption_strategy=PreemptionStrategy.MIGRATE)
+        mgr = HybridCloudManager(cfg)
+        mgr.register_resource(_cloud_gpu(worker_id="aws-0", is_spot=True))
+        mgr.register_resource(_cloud_gpu(worker_id="aws-1", is_spot=False))
+        mgr.register_task("t1", "aws-0")
+
+        event = PreemptionEvent(worker_id="aws-0", task_id="t1")
+        result = await mgr.handle_preemption(event)
+
+        assert result.success is True
+        assert result.strategy_used == PreemptionStrategy.MIGRATE
+        assert result.fallback_worker_id == "aws-1"
+
+    @pytest.mark.asyncio
+    async def test_migrate_no_fallback(self):
+        cfg = HybridConfig(preemption_strategy=PreemptionStrategy.MIGRATE)
+        mgr = HybridCloudManager(cfg)
+        mgr.register_resource(_cloud_gpu(worker_id="aws-0", is_spot=True))
+        mgr.register_task("t1", "aws-0")
+
+        event = PreemptionEvent(worker_id="aws-0", task_id="t1")
+        result = await mgr.handle_preemption(event)
+
+        assert result.success is False
+
+    @pytest.mark.asyncio
+    async def test_requeue(self):
+        cfg = HybridConfig(preemption_strategy=PreemptionStrategy.REQUEUE)
+        mgr = HybridCloudManager(cfg)
+        mgr.register_resource(_cloud_gpu(worker_id="aws-0", is_spot=True))
+        mgr.register_task("t1", "aws-0")
+
+        event = PreemptionEvent(worker_id="aws-0", task_id="t1")
+        result = await mgr.handle_preemption(event)
+
+        assert result.success is True
+        assert result.strategy_used == PreemptionStrategy.REQUEUE
+        assert "t1" not in mgr.get_active_tasks()
+
+    @pytest.mark.asyncio
+    async def test_preempted_worker_excluded_from_available(self):
+        mgr = HybridCloudManager(HybridConfig())
+        spot = _cloud_gpu(worker_id="aws-0", is_spot=True)
+        mgr.register_resource(spot)
+        mgr.register_resource(_local_gpu(worker_id="local-0"))
+        assert len(mgr.get_available_resources()) == 2
+
+        event = PreemptionEvent(worker_id="aws-0")
+        await mgr.handle_preemption(event)
+
+        available = mgr.get_available_resources()
+        assert len(available) == 1
+        assert available[0].worker_id == "local-0"
+
+    @pytest.mark.asyncio
+    async def test_preemption_history_recorded(self):
+        mgr = HybridCloudManager(HybridConfig())
+        mgr.register_resource(_cloud_gpu(worker_id="aws-0"))
+        mgr.register_resource(_local_gpu(worker_id="local-0"))
+
+        event = PreemptionEvent(worker_id="aws-0", task_id="t1")
+        await mgr.handle_preemption(event)
+
+        history = mgr.get_preemption_history()
+        assert len(history) == 1
+        assert history[0].original_worker_id == "aws-0"
+
+    @pytest.mark.asyncio
+    async def test_preemption_callback_called(self):
+        mgr = HybridCloudManager(HybridConfig())
+        mgr.register_resource(_cloud_gpu(worker_id="aws-0"))
+        mgr.register_resource(_local_gpu(worker_id="local-0"))
+
+        captured: list[PreemptionResult] = []
+        mgr.on_preemption(lambda r: captured.append(r))
+
+        event = PreemptionEvent(worker_id="aws-0", task_id="t1")
+        await mgr.handle_preemption(event)
+
+        assert len(captured) == 1
+        assert captured[0].task_id == "t1"
+
+    @pytest.mark.asyncio
+    async def test_async_callback(self):
+        mgr = HybridCloudManager(HybridConfig())
+        mgr.register_resource(_cloud_gpu(worker_id="aws-0"))
+        mgr.register_resource(_local_gpu(worker_id="local-0"))
+
+        captured: list[str] = []
+
+        async def async_cb(result: PreemptionResult) -> None:
+            captured.append(result.task_id)
+
+        mgr.on_preemption(async_cb)
+
+        event = PreemptionEvent(worker_id="aws-0", task_id="t1")
+        await mgr.handle_preemption(event)
+
+        assert captured == ["t1"]
+
+    @pytest.mark.asyncio
+    async def test_auto_detect_task_from_active(self):
+        """task_id가 없는 이벤트에서 active_tasks로 자동 식별."""
+        cfg = HybridConfig(preemption_strategy=PreemptionStrategy.REQUEUE)
+        mgr = HybridCloudManager(cfg)
+        mgr.register_resource(_cloud_gpu(worker_id="aws-0"))
+        mgr.register_task("t1", "aws-0")
+
+        event = PreemptionEvent(worker_id="aws-0")  # task_id 미지정
+        result = await mgr.handle_preemption(event)
+
+        assert result.task_id == "t1"
+        assert result.success is True
+
+    def test_recover_worker(self):
+        mgr = HybridCloudManager(HybridConfig())
+        gpu = _cloud_gpu(worker_id="aws-0")
+        mgr.register_resource(gpu)
+
+        # preempt manually
+        gpu.preempted = True
+        gpu.available = False
+        assert len(mgr.get_available_resources()) == 0
+
+        assert mgr.recover_worker("aws-0") is True
+        assert len(mgr.get_available_resources()) == 1
+
+    def test_recover_unknown_worker(self):
+        mgr = HybridCloudManager(HybridConfig())
+        assert mgr.recover_worker("nope") is False
+
+    def test_preemption_event_defaults(self):
+        e = PreemptionEvent(worker_id="w1")
+        assert e.reason == "spot_reclaimed"
+        assert e.task_id == ""
+        assert e.timestamp is not None
+
+    def test_preemption_result_defaults(self):
+        r = PreemptionResult(
+            original_worker_id="w1",
+            task_id="t1",
+            strategy_used=PreemptionStrategy.MIGRATE,
+        )
+        assert r.success is False
+        assert r.fallback_worker_id is None

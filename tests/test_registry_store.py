@@ -5,6 +5,8 @@ from pathlib import Path
 
 import pytest
 
+from src.evolution.models import EvolutionConfig
+from src.observability.config import TracingBackend, TracingConfig
 from src.registry.models import (
     GitConfig,
     ProjectMeta,
@@ -13,6 +15,7 @@ from src.registry.models import (
     WorkQueue,
 )
 from src.registry.store import RegistryStore
+from src.runtime.hybrid import HybridConfig, SchedulingStrategy
 
 
 @pytest.fixture()
@@ -160,3 +163,76 @@ class TestUpdateWorkQueue:
         assert loaded.work_queue.current_task is not None
         assert loaded.work_queue.current_task.task_id == "t001"
         assert loaded.work_queue.overall_progress == 25
+
+
+# ---------------------------------------------------------------------------
+# Phase 3 Config 통합
+# ---------------------------------------------------------------------------
+
+
+class TestPhase3ConfigIntegration:
+    def test_registry_without_phase3_configs(self):
+        """Phase 3 Config 없이 기존과 동일하게 생성 가능."""
+        reg = ProjectRegistry(
+            project_meta=ProjectMeta(project_id="p1", project_name="T"),
+            git_config=GitConfig(repo_url="https://example.com/repo"),
+        )
+        assert reg.tracing_config is None
+        assert reg.evolution_config is None
+        assert reg.hybrid_config is None
+        assert reg.kuberay_config is None
+
+    def test_registry_with_tracing_config(self):
+        reg = ProjectRegistry(
+            project_meta=ProjectMeta(project_id="p1", project_name="T"),
+            git_config=GitConfig(repo_url="https://example.com/repo"),
+            tracing_config=TracingConfig(
+                backend=TracingBackend.LANGSMITH,
+                langsmith_api_key="sk-test",
+            ),
+        )
+        assert reg.tracing_config is not None
+        assert reg.tracing_config.use_langsmith is True
+
+    def test_registry_with_evolution_config(self):
+        reg = ProjectRegistry(
+            project_meta=ProjectMeta(project_id="p1", project_name="T"),
+            git_config=GitConfig(repo_url="https://example.com/repo"),
+            evolution_config=EvolutionConfig(enabled=True, analysis_window_hours=12),
+        )
+        assert reg.evolution_config is not None
+        assert reg.evolution_config.enabled is True
+        assert reg.evolution_config.analysis_window_hours == 12
+
+    def test_registry_with_hybrid_config(self):
+        reg = ProjectRegistry(
+            project_meta=ProjectMeta(project_id="p1", project_name="T"),
+            git_config=GitConfig(repo_url="https://example.com/repo"),
+            hybrid_config=HybridConfig(
+                strategy=SchedulingStrategy.COST_OPTIMAL,
+                cloud_budget_daily_usd=100.0,
+            ),
+        )
+        assert reg.hybrid_config is not None
+        assert reg.hybrid_config.strategy == SchedulingStrategy.COST_OPTIMAL
+
+    def test_registry_roundtrip_with_configs(
+        self, store: RegistryStore
+    ):
+        """Phase 3 Config 포함 Registry가 저장/로드 라운드트립 가능."""
+        reg = ProjectRegistry(
+            project_meta=ProjectMeta(project_id="p1", project_name="T"),
+            git_config=GitConfig(repo_url="https://example.com/repo"),
+            tracing_config=TracingConfig(backend=TracingBackend.LANGFUSE),
+            evolution_config=EvolutionConfig(enabled=True),
+            hybrid_config=HybridConfig(cloud_budget_daily_usd=200.0),
+        )
+        store.save(reg)
+        loaded = store.load("p1")
+        assert loaded.tracing_config is not None
+        assert loaded.tracing_config.backend == TracingBackend.LANGFUSE
+        assert loaded.evolution_config is not None
+        assert loaded.evolution_config.enabled is True
+        assert loaded.hybrid_config is not None
+        assert loaded.hybrid_config.cloud_budget_daily_usd == 200.0
+        assert loaded.kuberay_config is None

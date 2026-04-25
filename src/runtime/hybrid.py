@@ -4,8 +4,10 @@ from __future__ import annotations
 
 import asyncio
 import logging
+from collections.abc import Callable
 from datetime import UTC, datetime
 from enum import StrEnum
+from typing import Any
 
 from pydantic import BaseModel, Field
 
@@ -33,6 +35,14 @@ class SchedulingStrategy(StrEnum):
     BALANCED = "balanced"
 
 
+class PreemptionStrategy(StrEnum):
+    """Spot preemption 발생 시 대응 전략."""
+
+    MIGRATE = "migrate"       # 다른 리소스로 태스크 이전
+    LOCAL_FALLBACK = "local_fallback"  # 로컬 리소스로 폴백
+    REQUEUE = "requeue"       # 태스크를 큐에 다시 추가
+
+
 class GPUResource(BaseModel):
     """GPU 리소스."""
 
@@ -45,6 +55,7 @@ class GPUResource(BaseModel):
     region: str = ""
     available: bool = True
     latency_score: float = Field(default=1.0, ge=0.0, le=1.0)
+    preempted: bool = False
 
 
 class HybridConfig(BaseModel):
@@ -59,6 +70,27 @@ class HybridConfig(BaseModel):
         default_factory=lambda: [CloudProvider.LOCAL]
     )
     overflow_threshold: float = Field(default=0.8, ge=0.0, le=1.0)
+    preemption_strategy: PreemptionStrategy = PreemptionStrategy.LOCAL_FALLBACK
+
+
+class PreemptionEvent(BaseModel):
+    """Spot preemption 이벤트."""
+
+    worker_id: str
+    task_id: str = ""
+    reason: str = "spot_reclaimed"
+    timestamp: datetime = Field(default_factory=lambda: datetime.now(UTC))
+
+
+class PreemptionResult(BaseModel):
+    """Preemption 처리 결과."""
+
+    original_worker_id: str
+    task_id: str
+    strategy_used: PreemptionStrategy
+    fallback_worker_id: str | None = None
+    success: bool = False
+    detail: str = ""
 
 
 class HybridCloudManager:
@@ -71,6 +103,9 @@ class HybridCloudManager:
         self._cloud_spend_monthly: float = 0.0
         self._local_utilization: float = 0.0
         self._last_reset_date: str = datetime.now(UTC).strftime("%Y-%m-%d")
+        self._active_tasks: dict[str, str] = {}  # task_id → worker_id
+        self._preemption_history: list[PreemptionResult] = []
+        self._on_preemption_callbacks: list[Any] = []
 
     @property
     def config(self) -> HybridConfig:
@@ -88,8 +123,8 @@ class HybridCloudManager:
         return len(self._resources) < before
 
     def get_available_resources(self) -> list[GPUResource]:
-        """사용 가능한 리소스 목록을 반환한다."""
-        return [r for r in self._resources if r.available]
+        """사용 가능한 리소스 목록을 반환한다 (preempted 제외)."""
+        return [r for r in self._resources if r.available and not r.preempted]
 
     def get_local_utilization(self) -> float:
         """로컬 GPU 사용률을 반환한다."""
@@ -159,6 +194,7 @@ class HybridCloudManager:
                 _slog.warning("cloud_budget_exceeded", task_id=task_id)
                 return None
 
+        self._active_tasks[task_id] = best_resource.worker_id
         _slog.info(
             "task_scheduled",
             task_id=task_id,
@@ -236,3 +272,171 @@ class HybridCloudManager:
         """백그라운드 예산 스케줄러를 중지한다."""
         self._scheduler_running = False
         _slog.info("budget_scheduler_stopped")
+
+    # --- 태스크 트래킹 ---
+
+    def register_task(self, task_id: str, worker_id: str) -> None:
+        """실행 중인 태스크를 등록한다."""
+        self._active_tasks[task_id] = worker_id
+
+    def unregister_task(self, task_id: str) -> bool:
+        """완료된 태스크를 해제한다."""
+        return self._active_tasks.pop(task_id, None) is not None
+
+    def get_active_tasks(self) -> dict[str, str]:
+        """활성 태스크 맵을 반환한다 (task_id → worker_id)."""
+        return dict(self._active_tasks)
+
+    # --- Spot Preemption 대응 ---
+
+    def on_preemption(self, callback: Callable[[PreemptionResult], Any]) -> None:
+        """Preemption 이벤트 콜백을 등록한다."""
+        self._on_preemption_callbacks.append(callback)
+
+    async def handle_preemption(self, event: PreemptionEvent) -> PreemptionResult:
+        """Spot preemption 이벤트를 처리한다.
+
+        1. 해당 worker를 preempted로 마킹
+        2. 설정된 전략에 따라 대응 (MIGRATE / LOCAL_FALLBACK / REQUEUE)
+        3. 결과를 히스토리에 기록하고 콜백 호출
+
+        Args:
+            event: Preemption 이벤트 정보.
+
+        Returns:
+            처리 결과.
+        """
+        strategy = self._config.preemption_strategy
+
+        # 워커를 preempted로 마킹
+        for r in self._resources:
+            if r.worker_id == event.worker_id:
+                r.preempted = True
+                r.available = False
+                break
+
+        # 해당 워커에서 실행 중인 태스크 식별
+        affected_tasks = [
+            tid for tid, wid in self._active_tasks.items()
+            if wid == event.worker_id
+        ]
+        task_id = event.task_id or (affected_tasks[0] if affected_tasks else "")
+
+        _slog.warning(
+            "preemption_detected",
+            worker_id=event.worker_id,
+            task_id=task_id,
+            strategy=strategy,
+            reason=event.reason,
+        )
+
+        result: PreemptionResult
+
+        if strategy == PreemptionStrategy.MIGRATE:
+            result = await self._handle_migrate(event.worker_id, task_id)
+        elif strategy == PreemptionStrategy.LOCAL_FALLBACK:
+            result = await self._handle_local_fallback(event.worker_id, task_id)
+        else:  # REQUEUE
+            result = self._handle_requeue(event.worker_id, task_id)
+
+        self._preemption_history.append(result)
+
+        # 콜백 호출
+        for cb in self._on_preemption_callbacks:
+            try:
+                ret = cb(result)
+                if asyncio.iscoroutine(ret):
+                    await ret
+            except Exception:
+                _slog.exception("preemption_callback_error")
+
+        return result
+
+    async def _handle_migrate(self, worker_id: str, task_id: str) -> PreemptionResult:
+        """다른 사용 가능한 리소스(클라우드 포함)로 태스크를 이전한다."""
+        fallback = self._find_fallback_resource(worker_id, local_only=False)
+        if fallback:
+            if task_id:
+                self._active_tasks[task_id] = fallback.worker_id
+            return PreemptionResult(
+                original_worker_id=worker_id,
+                task_id=task_id,
+                strategy_used=PreemptionStrategy.MIGRATE,
+                fallback_worker_id=fallback.worker_id,
+                success=True,
+                detail=f"Migrated to {fallback.worker_id} ({fallback.provider})",
+            )
+        return PreemptionResult(
+            original_worker_id=worker_id,
+            task_id=task_id,
+            strategy_used=PreemptionStrategy.MIGRATE,
+            success=False,
+            detail="No available resource for migration",
+        )
+
+    async def _handle_local_fallback(self, worker_id: str, task_id: str) -> PreemptionResult:
+        """로컬 리소스로 폴백한다."""
+        fallback = self._find_fallback_resource(worker_id, local_only=True)
+        if fallback:
+            if task_id:
+                self._active_tasks[task_id] = fallback.worker_id
+            return PreemptionResult(
+                original_worker_id=worker_id,
+                task_id=task_id,
+                strategy_used=PreemptionStrategy.LOCAL_FALLBACK,
+                fallback_worker_id=fallback.worker_id,
+                success=True,
+                detail=f"Fell back to local {fallback.worker_id}",
+            )
+        return PreemptionResult(
+            original_worker_id=worker_id,
+            task_id=task_id,
+            strategy_used=PreemptionStrategy.LOCAL_FALLBACK,
+            success=False,
+            detail="No local resource available for fallback",
+        )
+
+    def _handle_requeue(self, worker_id: str, task_id: str) -> PreemptionResult:
+        """태스크를 큐에 다시 추가한다 (active_tasks에서 제거)."""
+        if task_id:
+            self._active_tasks.pop(task_id, None)
+        return PreemptionResult(
+            original_worker_id=worker_id,
+            task_id=task_id,
+            strategy_used=PreemptionStrategy.REQUEUE,
+            success=True,
+            detail="Task requeued for rescheduling",
+        )
+
+    def _find_fallback_resource(
+        self, exclude_worker_id: str, *, local_only: bool = False
+    ) -> GPUResource | None:
+        """폴백 가능한 리소스를 찾는다."""
+        candidates = [
+            r for r in self._resources
+            if r.worker_id != exclude_worker_id
+            and r.available
+            and not r.preempted
+        ]
+        if local_only:
+            candidates = [r for r in candidates if r.provider == CloudProvider.LOCAL]
+
+        if not candidates:
+            return None
+
+        # latency_score 기준 최적 리소스 선택
+        return max(candidates, key=lambda r: r.latency_score)
+
+    def get_preemption_history(self) -> list[PreemptionResult]:
+        """Preemption 처리 히스토리를 반환한다."""
+        return list(self._preemption_history)
+
+    def recover_worker(self, worker_id: str) -> bool:
+        """Preempted 워커를 다시 사용 가능하게 복구한다."""
+        for r in self._resources:
+            if r.worker_id == worker_id:
+                r.preempted = False
+                r.available = True
+                _slog.info("worker_recovered", worker_id=worker_id)
+                return True
+        return False

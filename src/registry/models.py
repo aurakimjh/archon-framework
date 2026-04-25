@@ -7,6 +7,11 @@ from enum import StrEnum
 
 from pydantic import BaseModel, Field
 
+from src.evolution.models import EvolutionConfig
+from src.observability.config import TracingConfig
+from src.runtime.hybrid import HybridConfig
+from src.runtime.kuberay import KubeRayConfig
+
 # --- Enums ---
 
 class ProjectStatus(StrEnum):
@@ -181,6 +186,12 @@ class ProjectRegistry(BaseModel):
     memory_config: MemoryConfig | None = None
     metrics: ProjectMetrics = Field(default_factory=ProjectMetrics)
     human_gate_history: HumanGateHistory = Field(default_factory=HumanGateHistory)
+
+    # --- Phase 3 Config (선택적 중앙 참조) ---
+    tracing_config: TracingConfig | None = None
+    evolution_config: EvolutionConfig | None = None
+    hybrid_config: HybridConfig | None = None
+    kuberay_config: KubeRayConfig | None = None
 
     def get_model_for_role(self, role: str) -> str:
         """역할에 해당하는 LLM 모델명 반환. model_override 우선."""
