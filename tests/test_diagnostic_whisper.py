@@ -198,6 +198,47 @@ class TestMypyParser:
 # ---------------------------------------------------------------------------
 
 
+class TestRunSubprocess:
+    """_run_subprocess 직접 테스트."""
+
+    @pytest.mark.asyncio
+    async def test_file_not_found(self):
+        from src.diagnostics.runners import _run_subprocess
+        rc, stdout, stderr = await _run_subprocess(["__nonexistent_cmd_xyz__"])
+        assert rc == -1
+        assert "__nonexistent_cmd_xyz__" in stderr
+
+    @pytest.mark.asyncio
+    async def test_successful_command(self):
+        from src.diagnostics.runners import _run_subprocess
+        rc, stdout, stderr = await _run_subprocess(["echo", "hello"])
+        assert rc == 0
+        assert "hello" in stdout
+
+
+class TestRuffSeverity:
+    """_ruff_severity 엣지 케이스."""
+
+    def test_unknown_code_prefix(self):
+        from src.diagnostics.runners import _ruff_severity
+        # 알 수 없는 코드 → WARNING 기본값
+        result = _ruff_severity("Z999")
+        assert result == DiagnosticSeverity.WARNING
+
+    def test_empty_code(self):
+        from src.diagnostics.runners import _ruff_severity
+        result = _ruff_severity("")
+        assert result == DiagnosticSeverity.WARNING
+
+    def test_known_codes(self):
+        from src.diagnostics.runners import _ruff_severity
+        assert _ruff_severity("E501") == DiagnosticSeverity.ERROR
+        assert _ruff_severity("F401") == DiagnosticSeverity.ERROR
+        assert _ruff_severity("W291") == DiagnosticSeverity.WARNING
+        assert _ruff_severity("I001") == DiagnosticSeverity.INFO
+        assert _ruff_severity("D100") == DiagnosticSeverity.HINT
+
+
 class TestRunRuff:
     @pytest.mark.asyncio
     async def test_ruff_success(self):
@@ -271,6 +312,33 @@ class TestRunMypy:
         ):
             items = await run_mypy(["a.py"])
         assert items == []
+
+    @pytest.mark.asyncio
+    async def test_mypy_timeout(self):
+        async def slow_run(*args, **kwargs):
+            import asyncio
+            await asyncio.sleep(10)
+            return (0, "", "")
+
+        with patch("src.diagnostics.runners._run_subprocess", side_effect=slow_run):
+            items = await run_mypy(["a.py"], timeout=0.1)
+        assert items == []
+
+    @pytest.mark.asyncio
+    async def test_mypy_unknown_severity(self):
+        """mypy에서 알 수 없는 severity가 와도 ERROR로 처리."""
+        mypy_line = json.dumps({
+            "file": "a.py", "line": 1, "column": 0,
+            "severity": "unknown_level", "message": "weird", "code": "",
+        })
+        with patch(
+            "src.diagnostics.runners._run_subprocess",
+            new_callable=AsyncMock,
+            return_value=(1, mypy_line, ""),
+        ):
+            items = await run_mypy(["a.py"])
+        assert len(items) == 1
+        assert items[0].severity == DiagnosticSeverity.ERROR
 
 
 # ---------------------------------------------------------------------------
