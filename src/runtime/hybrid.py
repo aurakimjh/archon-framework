@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import asyncio
 import logging
 from datetime import UTC, datetime
 from enum import StrEnum
@@ -205,5 +206,33 @@ class HybridCloudManager:
         """날짜가 바뀌면 일일 지출을 리셋한다."""
         today = datetime.now(UTC).strftime("%Y-%m-%d")
         if today != self._last_reset_date:
+            _slog.info(
+                "daily_budget_reset",
+                prev_date=self._last_reset_date,
+                new_date=today,
+                prev_spend=round(self._cloud_spend_today, 2),
+            )
             self._cloud_spend_today = 0.0
             self._last_reset_date = today
+
+    # --- 백그라운드 예산 리셋 스케줄러 ---
+
+    async def start_budget_scheduler(self, interval_seconds: int = 3600) -> None:
+        """백그라운드에서 주기적으로 일일 예산을 리셋한다.
+
+        장기간 schedule_task() 호출이 없어도 날짜가 바뀌면
+        일일 지출이 자동으로 초기화된다.
+
+        Args:
+            interval_seconds: 체크 주기 (초). 기본 1시간.
+        """
+        self._scheduler_running = True
+        _slog.info("budget_scheduler_started", interval_seconds=interval_seconds)
+        while self._scheduler_running:
+            self._check_date_reset()
+            await asyncio.sleep(interval_seconds)
+
+    def stop_budget_scheduler(self) -> None:
+        """백그라운드 예산 스케줄러를 중지한다."""
+        self._scheduler_running = False
+        _slog.info("budget_scheduler_stopped")

@@ -201,11 +201,13 @@ class TestBenchmarkRunner:
         assert BenchmarkRunner._compute_accuracy("", task) == 0.0
 
     def test_estimate_cost_known_model(self):
-        cost = BenchmarkRunner._estimate_cost("gpt-4", 1000, 500)
+        runner = BenchmarkRunner(models=["gpt-4"])
+        cost = runner._estimate_cost("gpt-4", 1000, 500)
         assert cost > 0
 
     def test_estimate_cost_unknown_model(self):
-        cost = BenchmarkRunner._estimate_cost("unknown-model", 1000, 500)
+        runner = BenchmarkRunner(models=["unknown-model"])
+        cost = runner._estimate_cost("unknown-model", 1000, 500)
         assert cost > 0
 
 

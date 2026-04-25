@@ -3,9 +3,12 @@
 from __future__ import annotations
 
 import asyncio
+import json
 import logging
 import re
 import time
+from pathlib import Path
+from typing import Any
 
 from src.benchmark.models import BenchmarkResult, BenchmarkTask
 from src.log import get_logger
@@ -13,13 +16,45 @@ from src.log import get_logger
 logger = logging.getLogger(__name__)
 _slog = get_logger(__name__)
 
+# 기본 가격표 JSON 경로
+_DEFAULT_PRICING_PATH = Path(__file__).parent.parent.parent / "config" / "model_pricing.json"
+
+
+def load_pricing(path: str | Path | None = None) -> dict[str, Any]:
+    """모델 가격표를 JSON에서 로드한다.
+
+    Args:
+        path: JSON 경로. None이면 config/model_pricing.json 사용.
+
+    Returns:
+        {"default": {"input": float, "output": float}, "models": {...}}
+    """
+    target = Path(path) if path else _DEFAULT_PRICING_PATH
+    if target.exists():
+        try:
+            data = json.loads(target.read_text(encoding="utf-8"))
+            return {
+                "default": data.get("default", {"input": 0.002, "output": 0.006}),
+                "models": data.get("models", {}),
+            }
+        except (json.JSONDecodeError, OSError) as e:
+            logger.warning("Failed to load pricing from %s: %s", target, e)
+
+    return {"default": {"input": 0.002, "output": 0.006}, "models": {}}
+
 
 class BenchmarkRunner:
     """벤치마크 태스크를 여러 모델에 대해 실행한다."""
 
-    def __init__(self, models: list[str], concurrency: int = 3) -> None:
+    def __init__(
+        self,
+        models: list[str],
+        concurrency: int = 3,
+        pricing_path: str | Path | None = None,
+    ) -> None:
         self._models = list(models)
         self._concurrency = max(1, concurrency)
+        self._pricing = load_pricing(pricing_path)
 
     @property
     def models(self) -> list[str]:
@@ -117,19 +152,16 @@ class BenchmarkRunner:
 
         return matches / total_checks if total_checks > 0 else 0.0
 
-    @staticmethod
-    def _estimate_cost(model: str, input_tokens: int, output_tokens: int) -> float:
-        """모델별 비용 추정 (간이 가격표)."""
-        pricing: dict[str, tuple[float, float]] = {
-            "gpt-4": (0.03, 0.06),
-            "gpt-4o": (0.005, 0.015),
-            "gpt-3.5-turbo": (0.0005, 0.0015),
-            "claude-3-opus": (0.015, 0.075),
-            "claude-3-sonnet": (0.003, 0.015),
-            "claude-3-haiku": (0.00025, 0.00125),
-        }
-        for key, (inp_rate, out_rate) in pricing.items():
-            if key in model.lower():
+    def _estimate_cost(self, model: str, input_tokens: int, output_tokens: int) -> float:
+        """모델별 비용 추정. config/model_pricing.json 기반."""
+        models = self._pricing.get("models", {})
+        default = self._pricing.get("default", {"input": 0.002, "output": 0.006})
+
+        model_lower = model.lower()
+        for key, rates in models.items():
+            if key.lower() in model_lower:
+                inp_rate = rates.get("input", default["input"])
+                out_rate = rates.get("output", default["output"])
                 return (input_tokens / 1000 * inp_rate) + (output_tokens / 1000 * out_rate)
-        # 기본 가격
-        return (input_tokens / 1000 * 0.002) + (output_tokens / 1000 * 0.006)
+
+        return (input_tokens / 1000 * default["input"]) + (output_tokens / 1000 * default["output"])

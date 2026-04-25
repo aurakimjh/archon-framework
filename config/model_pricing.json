@@ -1,0 +1,21 @@
+{
+  "_comment": "모델별 가격표 (USD per 1K tokens). input: 입력 토큰 단가, output: 출력 토큰 단가.",
+  "default": {
+    "input": 0.002,
+    "output": 0.006
+  },
+  "models": {
+    "gpt-4": { "input": 0.03, "output": 0.06 },
+    "gpt-4o": { "input": 0.005, "output": 0.015 },
+    "gpt-4o-mini": { "input": 0.00015, "output": 0.0006 },
+    "gpt-3.5-turbo": { "input": 0.0005, "output": 0.0015 },
+    "claude-opus-4": { "input": 0.015, "output": 0.075 },
+    "claude-sonnet-4": { "input": 0.003, "output": 0.015 },
+    "claude-haiku-4": { "input": 0.0008, "output": 0.004 },
+    "claude-3-opus": { "input": 0.015, "output": 0.075 },
+    "claude-3-sonnet": { "input": 0.003, "output": 0.015 },
+    "claude-3-haiku": { "input": 0.00025, "output": 0.00125 },
+    "gemini-2.0-flash": { "input": 0.0001, "output": 0.0004 },
+    "gemini-2.5-pro": { "input": 0.00125, "output": 0.01 }
+  }
+}

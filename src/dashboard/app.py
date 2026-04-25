@@ -7,6 +7,7 @@ import os
 from pathlib import Path
 from typing import Any
 
+from src.dashboard.auth import extract_bearer_token, extract_ws_token, get_dashboard_token, verify_token
 from src.dashboard.routes import DashboardRoutes
 from src.dashboard.websocket import WebSocketManager
 from src.log import get_logger
@@ -15,10 +16,11 @@ logger = logging.getLogger(__name__)
 _slog = get_logger(__name__)
 
 try:
-    from fastapi import FastAPI, WebSocket
+    from fastapi import Depends, FastAPI, Header, Query, WebSocket, WebSocketDisconnect
     from fastapi.middleware.cors import CORSMiddleware
     from fastapi.responses import JSONResponse
     from fastapi.staticfiles import StaticFiles
+    from starlette.websockets import WebSocketState
 
     _HAS_FASTAPI = True
 except ImportError:
@@ -86,72 +88,93 @@ class DashboardApp:
         routes = self._routes
         ws_manager = self._ws_manager
 
+        # --- 인증 의존성 ---
+        from fastapi import HTTPException
+
+        async def require_auth(authorization: str | None = Header(None)) -> None:
+            """REST API Bearer 토큰 인증. 토큰 미설정 시 통과."""
+            token = get_dashboard_token()
+            if token is None:
+                return
+            provided = extract_bearer_token(authorization)
+            if not verify_token(provided, token):
+                raise HTTPException(
+                    status_code=401,
+                    detail="Invalid or missing authentication token",
+                    headers={"WWW-Authenticate": "Bearer"},
+                )
+
         # --- REST endpoints ---
-        @app.get("/api/projects")
+        @app.get("/api/projects", dependencies=[Depends(require_auth)])
         async def list_projects():
             data = await routes.list_projects()
             return [p.model_dump() for p in data]
 
-        @app.get("/api/projects/{project_id}")
+        @app.get("/api/projects/{project_id}", dependencies=[Depends(require_auth)])
         async def get_project(project_id: str):
             data = await routes.get_project(project_id)
             if data is None:
                 return JSONResponse({"error": "not found"}, status_code=404)
             return data.model_dump()
 
-        @app.get("/api/agents")
+        @app.get("/api/agents", dependencies=[Depends(require_auth)])
         async def list_agents():
             data = await routes.list_agents()
             return [a.model_dump() for a in data]
 
-        @app.get("/api/agents/{role}")
+        @app.get("/api/agents/{role}", dependencies=[Depends(require_auth)])
         async def get_agent(role: str):
             data = await routes.get_agent(role)
             if data is None:
                 return JSONResponse({"error": "not found"}, status_code=404)
             return data.model_dump()
 
-        @app.get("/api/cost")
+        @app.get("/api/cost", dependencies=[Depends(require_auth)])
         async def list_costs():
             data = await routes.list_costs()
             return [c.model_dump() for c in data]
 
-        @app.get("/api/cost/{project_id}")
+        @app.get("/api/cost/{project_id}", dependencies=[Depends(require_auth)])
         async def get_cost(project_id: str):
             data = await routes.get_cost(project_id)
             if data is None:
                 return JSONResponse({"error": "not found"}, status_code=404)
             return data.model_dump()
 
-        @app.get("/api/gates/queue")
+        @app.get("/api/gates/queue", dependencies=[Depends(require_auth)])
         async def gate_queue():
             data = await routes.list_gate_queue()
             return [g.model_dump() for g in data]
 
-        @app.post("/api/gates/{handoff_id}/approve")
+        @app.post("/api/gates/{handoff_id}/approve", dependencies=[Depends(require_auth)])
         async def approve_gate(handoff_id: str):
             result = await routes.approve_gate(handoff_id)
             await ws_manager.broadcast_dict("gate_approved", result)
             return result
 
-        @app.post("/api/gates/{handoff_id}/reject")
+        @app.post("/api/gates/{handoff_id}/reject", dependencies=[Depends(require_auth)])
         async def reject_gate(handoff_id: str):
             result = await routes.reject_gate(handoff_id)
             await ws_manager.broadcast_dict("gate_rejected", result)
             return result
 
-        @app.get("/api/metrics")
+        @app.get("/api/metrics", dependencies=[Depends(require_auth)])
         async def get_metrics():
             return await routes.get_metrics()
 
-        # --- WebSocket ---
+        # --- WebSocket (토큰 인증) ---
         @app.websocket("/ws")
-        async def websocket_endpoint(websocket: WebSocket):
+        async def websocket_endpoint(websocket: WebSocket, token: str | None = Query(None)):
+            expected = get_dashboard_token()
+            if not verify_token(token, expected):
+                await websocket.close(code=4401, reason="Unauthorized")
+                return
+
             await ws_manager.connect(websocket)
             try:
                 while True:
                     await websocket.receive_text()
-            except Exception:
+            except (WebSocketDisconnect, Exception):
                 await ws_manager.disconnect(websocket)
 
         # --- Static files ---
