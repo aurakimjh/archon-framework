@@ -17,6 +17,7 @@ from src.orchestrator.handoff import (
     Task,
 )
 from src.registry.models import (
+    AgentModelConfig,
     AgentRole,
     GitConfig,
     ProjectMeta,
@@ -223,3 +224,65 @@ class TestBuildHandoffFromParsed:
         input_ho = _make_handoff()
         result = agent._build_handoff_from_parsed(input_ho, {}, "fallback text here")
         assert result.task.completed_summary == "fallback text here"
+
+
+# --- _load_prompt_overlay ---
+
+
+class TestPromptOverlay:
+    def test_no_config_returns_empty(self):
+        agent = _TestAgent(role=AgentRole.BACKEND)
+        registry = _make_registry()
+        assert agent._load_prompt_overlay(registry) == ""
+
+    def test_no_path_returns_empty(self):
+        agent = _TestAgent(role=AgentRole.BACKEND)
+        registry = _make_registry()
+        registry.agent_config["backend"] = AgentModelConfig(
+            model="test-model",
+            prompt_overlay_path=None,
+        )
+        assert agent._load_prompt_overlay(registry) == ""
+
+    def test_nonexistent_path_returns_empty(self):
+        agent = _TestAgent(role=AgentRole.BACKEND)
+        registry = _make_registry()
+        registry.agent_config["backend"] = AgentModelConfig(
+            model="test-model",
+            prompt_overlay_path="/tmp/nonexistent-prompt.md",
+        )
+        assert agent._load_prompt_overlay(registry) == ""
+
+    def test_loads_overlay_from_file(self, tmp_path):
+        overlay_file = tmp_path / "backend-prompt.md"
+        overlay_file.write_text("## Extra Instructions\nBe very careful.", encoding="utf-8")
+
+        agent = _TestAgent(role=AgentRole.BACKEND)
+        registry = _make_registry()
+        registry.agent_config["backend"] = AgentModelConfig(
+            model="test-model",
+            prompt_overlay_path=str(overlay_file),
+        )
+        result = agent._load_prompt_overlay(registry)
+        assert "Extra Instructions" in result
+        assert "Be very careful" in result
+
+    def test_overlay_merged_into_system_prompt(self, tmp_path):
+        overlay_file = tmp_path / "backend-overlay.md"
+        overlay_file.write_text("## Private Knowledge\nUse FastAPI patterns.", encoding="utf-8")
+
+        agent = _TestAgent(role=AgentRole.BACKEND)
+        registry = _make_registry()
+        registry.agent_config["backend"] = AgentModelConfig(
+            model="test-model",
+            prompt_overlay_path=str(overlay_file),
+        )
+        handoff = _make_handoff()
+
+        base_prompt = agent._build_system_prompt(handoff, registry)
+        overlay = agent._load_prompt_overlay(registry)
+        combined = base_prompt + "\n\n" + overlay
+
+        assert "You are a test agent." in combined
+        assert "Private Knowledge" in combined
+        assert "FastAPI patterns" in combined

@@ -101,6 +101,12 @@ class BaseAgent(abc.ABC):
         )
 
         system_prompt = self._build_system_prompt(handoff, registry)
+
+        # --- 프롬프트 오버레이: Private 프롬프트 병합 ---
+        overlay = self._load_prompt_overlay(registry)
+        if overlay:
+            system_prompt = system_prompt + "\n\n" + overlay
+
         user_prompt = self._build_user_prompt(handoff)
 
         # --- 가드레일: 입력 검증 ---
@@ -284,6 +290,43 @@ class BaseAgent(abc.ABC):
     ) -> str:
         """역할별 시스템 프롬프트 생성."""
         ...
+
+    def _load_prompt_overlay(self, registry: ProjectRegistry) -> str:
+        """Private 프롬프트 오버레이를 로드한다.
+
+        AgentModelConfig.prompt_overlay_path가 설정되어 있으면 해당 파일을 읽어
+        기존 시스템 프롬프트에 병합한다. 파일이 없거나 설정이 없으면 빈 문자열을
+        반환하여 기존 동작을 100% 유지한다.
+        """
+        import pathlib
+
+        agent_cfg = registry.agent_config.get(self.role)
+        if not agent_cfg or not agent_cfg.prompt_overlay_path:
+            return ""
+
+        overlay_path = pathlib.Path(agent_cfg.prompt_overlay_path)
+        if not overlay_path.is_file():
+            self.slog.debug(
+                "prompt_overlay_not_found",
+                path=str(overlay_path),
+            )
+            return ""
+
+        try:
+            content = overlay_path.read_text(encoding="utf-8").strip()
+            self.slog.info(
+                "prompt_overlay_loaded",
+                path=str(overlay_path),
+                chars=len(content),
+            )
+            return content
+        except OSError as e:
+            self.slog.warning(
+                "prompt_overlay_read_error",
+                path=str(overlay_path),
+                error=str(e),
+            )
+            return ""
 
     def _build_user_prompt(self, handoff: HandoffArtifact) -> str:
         """태스크 지시사항을 유저 프롬프트로 변환."""

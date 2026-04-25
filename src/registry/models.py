@@ -63,6 +63,8 @@ class AgentModelConfig(BaseModel):
     temperature: float = 0.2
     model_override: str | None = None
     reviewer_guidelines_path: str | None = None
+    # 프롬프트 오버레이 (Private 프롬프트 파일 경로)
+    prompt_overlay_path: str | None = None
     # Async Streaming
     streaming: bool = False
     timeout_seconds: int = 300
