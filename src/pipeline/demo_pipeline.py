@@ -57,7 +57,7 @@ _LINT_FAIL = _AttemptData(
     unit_passed=12, unit_failed=0,
     security=SecurityScan(),
     review_score=78,
-    review_flags=[ReviewFlag(severity="warning", category="style", detail="E501 line too long")],
+    review_flags=[ReviewFlag(severity="low", category="style", detail="E501 line too long")],
 )
 
 _LINT_FIXED = _AttemptData(
@@ -75,8 +75,8 @@ _POOR_REVIEW = _AttemptData(
     security=SecurityScan(),
     review_score=58,
     review_flags=[
-        ReviewFlag(severity="error", category="design", detail="Missing error handling"),
-        ReviewFlag(severity="error", category="security", detail="Input not validated"),
+        ReviewFlag(severity="high", category="design", detail="Missing error handling"),
+        ReviewFlag(severity="high", category="security", detail="Input not validated"),
     ],
 )
 

@@ -122,7 +122,7 @@ compressed = compress_handoff(artifact, token_gap=2000)
 | 필드 | 타입 | 기본값 | 설명 |
 |---|---|---|---|
 | `handoff_id` | `str` | (자동 생성) | 핸드오프 고유 식별자. `hf_` 접두사 + 타임스탬프 + 랜덤 해시 |
-| `schema_version` | `str` | `"1.0.0"` | Handoff Artifact 스키마 버전 |
+| `schema_version` | `str` | `"1.1.0"` | Handoff Artifact 스키마 버전 |
 | `created_at` | `str` (ISO 8601) | (자동 생성) | 생성 시각 |
 | `expires_at` | `str` (ISO 8601) \| `null` | `null` | 만료 시각. null이면 만료 없음 |
 | `from_agent` | `str` | (필수) | 발신 에이전트 역할명 (예: `"backend"`) |
@@ -133,7 +133,7 @@ compressed = compress_handoff(artifact, token_gap=2000)
 ```json
 {
   "handoff_id": "hf_20260413a3b4c5",
-  "schema_version": "1.0.0",
+  "schema_version": "1.1.0",
   "created_at": "2026-04-13T09:23:11Z",
   "expires_at": "2026-04-14T09:23:11Z",
   "from_agent": "backend",

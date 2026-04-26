@@ -13,6 +13,9 @@ from src.agents.reviewer import ReviewerAgent
 from src.agents.tester import TesterAgent
 from src.gate.evaluator import evaluate_gate
 from src.gate.models import GateDecision
+from src.guardrails.policy import GuardrailPolicy
+from src.guardrails.token_budget import TokenBudgetTracker
+from src.healing.health_monitor import AgentHealthMonitor
 from src.log import get_logger
 from src.memory.context_injector import MemoryStore
 from src.notifications.base import GateEvent, Notifier
@@ -26,7 +29,7 @@ from src.registry.models import AgentRole, ProjectRegistry
 logger = logging.getLogger(__name__)
 slog = get_logger(__name__)
 
-# 에이전트 풀 (무상태 — 인스턴스 재사용 가능)
+# 레거시 호환: 정책 없는 기본 풀
 AGENT_POOL: dict[str, BaseAgent] = {
     AgentRole.BACKEND: BackendAgent(),
     AgentRole.FRONTEND: FrontendAgent(),
@@ -35,6 +38,29 @@ AGENT_POOL: dict[str, BaseAgent] = {
     AgentRole.DOCS: DocsAgent(),
     AgentRole.REVIEWER: ReviewerAgent(),
 }
+
+
+def create_agent_pool(
+    guardrail_policy: GuardrailPolicy | None = None,
+    token_budget: TokenBudgetTracker | None = None,
+    health_monitor: AgentHealthMonitor | None = None,
+    tracing_middleware: object | None = None,
+) -> dict[str, BaseAgent]:
+    """의존성을 주입한 에이전트 풀을 생성한다."""
+    kwargs: dict = {
+        "guardrail_policy": guardrail_policy,
+        "token_budget": token_budget,
+        "health_monitor": health_monitor,
+        "tracing_middleware": tracing_middleware,
+    }
+    return {
+        AgentRole.BACKEND: BackendAgent(**kwargs),
+        AgentRole.FRONTEND: FrontendAgent(**kwargs),
+        AgentRole.TESTER: TesterAgent(**kwargs),
+        AgentRole.DEVOPS: DevOpsAgent(**kwargs),
+        AgentRole.DOCS: DocsAgent(**kwargs),
+        AgentRole.REVIEWER: ReviewerAgent(**kwargs),
+    }
 
 # 기본 태스크 체인 정의 (역할별 후속 에이전트)
 DEFAULT_TASK_CHAINS: dict[str, list[str]] = {
@@ -64,11 +90,13 @@ class Orchestrator:
         task_chains: dict[str, list[str]] | None = None,
         notifier: Notifier | None = None,
         tracing_middleware: object | None = None,
+        agent_pool: dict[str, BaseAgent] | None = None,
     ) -> None:
         self.memory = memory or MemoryStore()
         self._task_chains = task_chains or DEFAULT_TASK_CHAINS
         self._notifier = notifier
         self._tracing = tracing_middleware
+        self._agent_pool = agent_pool or AGENT_POOL
 
     async def process_handoff(
         self,
@@ -110,7 +138,25 @@ class Orchestrator:
             )
 
             # 1. 에이전트 실행 + 리뷰 + Gate 판정
-            result = await self._execute_pipeline(current_handoff, registry)
+            try:
+                result = await self._execute_pipeline(current_handoff, registry)
+            except Exception as exc:
+                logger.error(
+                    "Pipeline exception on attempt %d for [%s]: %s",
+                    attempt + 1,
+                    current_handoff.task.task_id,
+                    exc,
+                )
+                result = current_handoff.model_copy(deep=True)
+                result.quality_gates.gate_decision = GateDecision.L2_HUMAN
+                result.human_gate_package = HumanGatePackage(
+                    gate_level=GateDecision.L2_HUMAN,
+                    trigger_reason=f"Pipeline error: {type(exc).__name__}: {exc}",
+                    required_decision="Investigate pipeline failure and decide how to proceed.",
+                    estimated_review_time="10분",
+                )
+                self._end_pipeline_span(_pipeline_span, result)
+                return result
             gate = result.quality_gates.gate_decision
 
             # 2. Gate에 따른 분기
@@ -185,7 +231,7 @@ class Orchestrator:
         target_role = handoff.envelope.to_agent
 
         # 에이전트 선택
-        agent = AGENT_POOL.get(target_role)
+        agent = self._agent_pool.get(target_role)
         if not agent:
             raise ValueError(f"Unknown agent role: {target_role}")
 
@@ -209,16 +255,31 @@ class Orchestrator:
         result.quality_gates = qa_result
 
         # 리뷰 (target이 reviewer가 아닌 경우)
+        # ReviewerAgent._build_handoff_result()가 QA 결과를 보존하므로
+        # reviewer 실행 전에 QA 결과를 input_handoff에 넣어두면 된다.
         if target_role != AgentRole.REVIEWER:
-            reviewer = AGENT_POOL.get(AgentRole.REVIEWER)
+            reviewer = self._agent_pool.get(AgentRole.REVIEWER)
             if reviewer:
                 result = await reviewer.execute(result, registry)
+
+        # Dynamic Guardrails 인자 준비
+        changed_paths = [cf.path for cf in result.artifacts.changed_files]
+        has_schema = any(
+            "migration" in p or "schema" in p for p in changed_paths
+        )
+        has_external = any(
+            "integration" in p or "external" in p for p in changed_paths
+        )
 
         # Gate 판정
         gate = evaluate_gate(
             quality=result.quality_gates,
             policy=registry.quality_policy,
             retry_count=handoff.envelope.retry_count,
+            changed_paths=changed_paths,
+            task_instructions=handoff.task.next_instructions,
+            has_schema_change=has_schema,
+            has_external_integration=has_external,
         )
         result.quality_gates.gate_decision = gate
 
@@ -273,15 +334,21 @@ class Orchestrator:
         registry: ProjectRegistry,
     ) -> None:
         """AUTO_PASS — 자동 커밋/푸시."""
+        if not handoff.artifacts.changed_files:
+            logger.info("AUTO_PASS — no changed files, skipping commit for [%s]", handoff.task.task_id)
+            return
+
         logger.info("AUTO_PASS — proceeding to auto commit for [%s]", handoff.task.task_id)
         slog.info("state_transition", state="AUTO_PASS", task_id=handoff.task.task_id)
 
         from src.runtime.git_executor import GitExecutor
 
+        repo_root = handoff.project_context.git_repo
         git = GitExecutor(registry.git_config)
         await git.auto_commit(
             handoff=handoff,
             message_template=registry.git_config.auto_commit_message_template,
+            repo_root=repo_root,
         )
 
     def get_next_agents(self, current_role: str) -> list[str]:

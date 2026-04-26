@@ -44,6 +44,12 @@ def evaluate_gate(
     if _check_l2_human(quality, policy, has_schema_change, has_external_integration, retry_count):
         return GateDecision.L2_HUMAN
 
+    # L2 — PathGuard Human Gate 강제
+    if quality.path_guard_human_gate:
+        logger.info("Gate: L2_HUMAN — PathGuard requires human gate")
+        slog.warning("gate_decision", decision="L2_HUMAN", reasons=["path_guard_human_gate"])
+        return GateDecision.L2_HUMAN
+
     # L2 — Dynamic Guardrails (위험 경로/키워드 감지)
     if _check_dynamic_guardrails(policy, changed_paths, task_instructions):
         return GateDecision.L2_HUMAN

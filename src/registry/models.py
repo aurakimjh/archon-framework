@@ -75,6 +75,8 @@ class AgentModelConfig(BaseModel):
     timeout_seconds: int = 300
     # Complexity Router
     high_complexity_model: str | None = None
+    # 모델 컨텍스트 윈도우 (토큰 수). None이면 max_tokens * 3으로 추정
+    context_window_tokens: int | None = None
 
 
 class QualityPolicy(BaseModel):

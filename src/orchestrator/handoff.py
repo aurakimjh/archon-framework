@@ -3,9 +3,9 @@
 from __future__ import annotations
 
 from datetime import datetime
-from typing import Any
+from typing import Any, Literal
 
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, model_validator
 
 from src.gate.models import GateDecision
 
@@ -15,13 +15,19 @@ class Envelope(BaseModel):
     """핸드오프 식별·라우팅·재시도 추적."""
 
     handoff_id: str
-    schema_version: str = "1.0.0"
+    schema_version: Literal["1.0.0", "1.1.0"] = "1.1.0"
     created_at: datetime = Field(default_factory=datetime.utcnow)
     expires_at: datetime | None = None
     from_agent: str
     to_agent: str
-    retry_count: int = 0
+    retry_count: int = Field(default=0, ge=0)
     parent_handoff_id: str | None = None
+
+    @model_validator(mode="after")
+    def _validate_expires_after_created(self) -> Envelope:
+        if self.expires_at is not None and self.expires_at <= self.created_at:
+            raise ValueError("expires_at must be after created_at")
+        return self
 
 
 # --- Project Context ---
@@ -34,7 +40,7 @@ class TechStack(BaseModel):
 
 
 class ProjectContext(BaseModel):
-    """무상태 에이전트에 주입하는 프로젝트 네임스페이스."""
+    """무상태 ���이전트에 주입하는 프로젝트 네임스페이스."""
 
     project_id: str
     project_name: str
@@ -43,7 +49,7 @@ class ProjectContext(BaseModel):
     base_commit_sha: str
     sop_path: str | None = None
     tech_stack: TechStack | None = None
-    priority: str = "medium"
+    priority: Literal["low", "medium", "high", "critical"] = "medium"
 
 
 # --- Task ---
@@ -56,7 +62,7 @@ class Decision(BaseModel):
 
 class Blocker(BaseModel):
     issue: str
-    impact: str = "medium"
+    impact: Literal["low", "medium", "high", "critical"] = "medium"
     suggested_resolution: str = ""
 
 
@@ -75,14 +81,14 @@ class Task(BaseModel):
 
 class ChangedFile(BaseModel):
     path: str
-    change_type: str  # added, modified, deleted
+    change_type: Literal["added", "modified", "deleted"]
     reason: str = ""
 
 
 class DependencyChange(BaseModel):
     name: str
     version: str
-    action: str  # added, updated, removed
+    action: Literal["added", "updated", "removed"]
     license: str | None = None
     security_scan: str | None = None
 
@@ -99,22 +105,22 @@ class Artifacts(BaseModel):
 # --- Quality Gates ---
 
 class TestResults(BaseModel):
-    unit_passed: int = 0
-    unit_failed: int = 0
-    integration_passed: int = 0
-    coverage_percent: float = 0.0
+    unit_passed: int = Field(default=0, ge=0)
+    unit_failed: int = Field(default=0, ge=0)
+    integration_passed: int = Field(default=0, ge=0)
+    coverage_percent: float = Field(default=0.0, ge=0.0, le=100.0)
 
 
 class SecurityScan(BaseModel):
     tool: str = "semgrep"
-    critical: int = 0
-    high: int = 0
-    medium: int = 0
-    low: int = 0
+    critical: int = Field(default=0, ge=0)
+    high: int = Field(default=0, ge=0)
+    medium: int = Field(default=0, ge=0)
+    low: int = Field(default=0, ge=0)
 
 
 class ReviewFlag(BaseModel):
-    severity: str
+    severity: Literal["low", "medium", "high", "critical"]
     category: str
     detail: str
 
@@ -123,13 +129,14 @@ class QualityGates(BaseModel):
     """자동 QA 결과 + Review Agent 평가 + gate_decision."""
 
     test_results: TestResults = Field(default_factory=TestResults)
-    lint_result: str = "passed"
-    build_result: str = "passed"
+    lint_result: Literal["passed", "failed", "skipped"] = "passed"
+    build_result: Literal["passed", "failed", "skipped"] = "passed"
     security_scan: SecurityScan = Field(default_factory=SecurityScan)
-    review_score: int = 0
+    review_score: int = Field(default=0, ge=0, le=100)
     review_flags: list[ReviewFlag] = Field(default_factory=list)
     gate_decision: GateDecision = GateDecision.L2_HUMAN
-    sop_compliance_score: int | None = None  # SOP 준수 점수 (0~100, None이면 미검사)
+    sop_compliance_score: int | None = Field(default=None, ge=0, le=100)
+    path_guard_human_gate: bool = False
 
 
 # --- Human Gate Package ---
@@ -137,7 +144,7 @@ class QualityGates(BaseModel):
 class DecisionOption(BaseModel):
     option: str
     next_action: str
-    risk: str = "low"
+    risk: Literal["low", "medium", "high", "critical"] = "low"
 
 
 class HumanGatePackage(BaseModel):
@@ -154,7 +161,7 @@ class HumanGatePackage(BaseModel):
 # --- Memory Context ---
 
 class PastDecision(BaseModel):
-    similarity: float
+    similarity: float = Field(ge=0.0, le=1.0)
     project: str
     decision: str
     outcome: str
@@ -167,7 +174,7 @@ class KnownPattern(BaseModel):
 
 
 class ErrorRecord(BaseModel):
-    retry_num: int
+    retry_num: int = Field(ge=0)
     error: str
     resolution: str
 
@@ -199,3 +206,15 @@ class HandoffArtifact(BaseModel):
     quality_gates: QualityGates = Field(default_factory=QualityGates)
     human_gate_package: HumanGatePackage | None = None
     memory_context: MemoryContext | None = None
+
+    @model_validator(mode="after")
+    def _validate_human_gate_package(self) -> HandoffArtifact:
+        gate = self.quality_gates.gate_decision
+        needs_package = gate in (
+            GateDecision.L2_HUMAN,
+            GateDecision.L3_HALT,
+            GateDecision.L4_DEPLOY,
+        )
+        if needs_package and self.human_gate_package is None:
+            pass  # 허용: 오케스트레이터가 gate 판정 후 별도로 설정함
+        return self

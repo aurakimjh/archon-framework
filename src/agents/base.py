@@ -88,7 +88,12 @@ class BaseAgent(abc.ABC):
 
         model = registry.get_model_for_role(self.role)
         agent_cfg = registry.agent_config.get(self.role)
-        max_ctx = (agent_cfg.max_tokens * 3) if agent_cfg else 12000
+        if agent_cfg and agent_cfg.context_window_tokens:
+            max_ctx = agent_cfg.context_window_tokens
+        elif agent_cfg:
+            max_ctx = agent_cfg.max_tokens * 3
+        else:
+            max_ctx = 12000
 
         # 토큰 초과 시 자동 압축
         handoff = compress_handoff(handoff, max_context_tokens=max_ctx)
@@ -295,9 +300,11 @@ class BaseAgent(abc.ABC):
         """Private 프롬프트 오버레이를 로드한다.
 
         AgentModelConfig.prompt_overlay_path가 설정되어 있으면 해당 파일을 읽어
-        기존 시스템 프롬프트에 병합한다. 파일이 없거나 설정이 없으면 빈 문자열을
+        기존 시스템 프롬프트에 병합한다. 상대 경로인 경우 ARCHON_PRIVATE_ROOT
+        환경변수를 기준으로 해석한다. 파일이 없거나 설정이 없으면 빈 문자열을
         반환하여 기존 동작을 100% 유지한다.
         """
+        import os
         import pathlib
 
         agent_cfg = registry.agent_config.get(self.role)
@@ -305,10 +312,17 @@ class BaseAgent(abc.ABC):
             return ""
 
         overlay_path = pathlib.Path(agent_cfg.prompt_overlay_path)
+
+        if not overlay_path.is_absolute():
+            private_root = os.environ.get("ARCHON_PRIVATE_ROOT", "")
+            if private_root:
+                overlay_path = pathlib.Path(private_root) / overlay_path
+
         if not overlay_path.is_file():
-            self.slog.debug(
+            self.slog.warning(
                 "prompt_overlay_not_found",
                 path=str(overlay_path),
+                agent_role=str(self.role),
             )
             return ""
 
@@ -457,9 +471,10 @@ class BaseAgent(abc.ABC):
         if not guard_result.passed:
             raise PathGuardError(guard_result.blocked_paths)
         if guard_result.requires_human_gate:
+            result.quality_gates.path_guard_human_gate = True
             logger.warning(
                 "PathGuard [%s]: config/sensitive file change detected"
-                " — Human Gate recommended: %s",
+                " — Human Gate enforced: %s",
                 self.role,
                 guard_result.config_changes,
             )

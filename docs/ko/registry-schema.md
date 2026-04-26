@@ -155,7 +155,7 @@ QA 임계값, Human Gate 기준, 토큰 예산, Dynamic Guardrails 설정입니�
 | `require_human_on_schema_change` | `bool` | `true` | DB 스키마 변경 시 L2 Human Gate 자동 발동 여부 |
 | `require_human_on_external_integration` | `bool` | `true` | 외부 API 연동 감지 시 L2 Human Gate 자동 발동 여부 |
 | `daily_token_budget` | `int` | `500` | 일일 토큰 예산 (단위: 천 토큰). 초과 시 경고 |
-| `sop_compliance_threshold` | `int` | `70` | SOP 준수도 점수 최솟값 (0-100). 미달 시 L1 재작업. SOP 파일이 없으면 검사를 건너뜁니다 |
+| `sop_compliance_threshold` | `int` | `70` | SOP 준수도 점수 최솟값 (0-100). 미달 시 L2 Human Gate 발동. SOP 파일이 없으면 검사를 건너뜁니다 |
 | `high_risk_paths` | `list[str]` | `[]` | 이 경로 패턴에 해당하는 파일이 변경되면 자동으로 L2 Human Gate가 발동됩니다 |
 | `high_risk_keywords` | `list[str]` | `[]` | 태스크 지시사항에 이 키워드가 포함되면 자동으로 L2 Human Gate가 발동됩니다 |
 

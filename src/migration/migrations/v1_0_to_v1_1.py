@@ -2,6 +2,7 @@
 
 변경 사항:
 - quality_gates에 sop_compliance_score 필드 추가 (None = 미검사)
+- quality_gates에 path_guard_human_gate 필드 추가 (False)
 - envelope.schema_version 갱신
 """
 
@@ -15,6 +16,7 @@ def upgrade(data: dict) -> dict:
 
     qg = data.setdefault("quality_gates", {})
     qg.setdefault("sop_compliance_score", None)
+    qg.setdefault("path_guard_human_gate", False)
 
     return data
 
@@ -26,6 +28,7 @@ def downgrade(data: dict) -> dict:
 
     qg = data.get("quality_gates", {})
     qg.pop("sop_compliance_score", None)
+    qg.pop("path_guard_human_gate", None)
 
     return data
 

@@ -109,36 +109,49 @@ class GitExecutor:
     ) -> str | None:
         """AUTO_PASS 시 자동 커밋을 수행한다.
 
-        1. protected_paths 검증
-        2. 브랜치 생성/체크아웃
-        3. 변경 파일 스테이징
-        4. 커밋
-        5. 푸시 (remote 설정 시)
+        1. repo_root 검증
+        2. protected_paths 검증
+        3. 변경 파일 유무 확인
+        4. 브랜치 생성/체크아웃
+        5. 변경 파일 스테이징
+        6. 커밋
+        7. 푸시 (remote 설정 시)
 
         Returns:
             커밋 SHA 또는 None (변경사항 없을 때)
         """
         self._repo_root = repo_root
 
-        # 1. protected_paths 검증
+        # 1. repo_root 검증
+        if self._repo_root:
+            actual_root = await self._run_git("rev-parse", "--show-toplevel")
+            if actual_root != self._repo_root:
+                _slog.warning(
+                    "repo_root_mismatch",
+                    expected=self._repo_root,
+                    actual=actual_root,
+                )
+                self._repo_root = actual_root
+
+        # 2. protected_paths 검증
         self.validate_protected_paths(handoff)
         logger.info("Protected paths validation passed")
 
-        # 2. 브랜치 생성/체크아웃
+        # 3. 변경 파일 유무 확인 (브랜치 checkout 전)
+        if not handoff.artifacts.changed_files:
+            logger.info("No changed files to commit")
+            return None
+
+        # 4. 브랜치 생성/체크아웃
         branch_name = self._build_branch_name(handoff)
         try:
             await self._run_git("checkout", "-b", branch_name)
             logger.info("Created and checked out branch: %s", branch_name)
         except GitCommandError:
-            # 브랜치가 이미 존재하면 체크아웃만
             await self._run_git("checkout", branch_name)
             logger.info("Checked out existing branch: %s", branch_name)
 
-        # 3. 변경 파일 스테이징
-        if not handoff.artifacts.changed_files:
-            logger.info("No changed files to commit")
-            return None
-
+        # 5. 변경 파일 스테이징
         for changed_file in handoff.artifacts.changed_files:
             if changed_file.change_type == "deleted":
                 await self._run_git("rm", changed_file.path)

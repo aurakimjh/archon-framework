@@ -12,8 +12,8 @@ from .base import BaseAgent
 class FrontendAgent(BaseAgent):
     """프론트엔드 코딩 전문 에이전트."""
 
-    def __init__(self, a2a_router: A2ARouter | None = None) -> None:
-        super().__init__(role=AgentRole.FRONTEND, a2a_router=a2a_router)
+    def __init__(self, a2a_router: A2ARouter | None = None, **kwargs) -> None:
+        super().__init__(role=AgentRole.FRONTEND, a2a_router=a2a_router, **kwargs)
 
     def _build_system_prompt(
         self,

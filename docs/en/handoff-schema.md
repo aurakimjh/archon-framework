@@ -122,7 +122,7 @@ Manages the unique identifier, sender/receiver agents, and retry count for a han
 | Field | Type | Default | Description |
 |---|---|---|---|
 | `handoff_id` | `str` | (auto-generated) | Unique handoff identifier. `hf_` prefix + timestamp + random hash |
-| `schema_version` | `str` | `"1.0.0"` | Handoff Artifact schema version |
+| `schema_version` | `str` | `"1.1.0"` | Handoff Artifact schema version |
 | `created_at` | `str` (ISO 8601) | (auto-generated) | Creation timestamp |
 | `expires_at` | `str` (ISO 8601) \| `null` | `null` | Expiration timestamp. null means no expiration |
 | `from_agent` | `str` | (required) | Sender agent role name (e.g., `"backend"`) |
@@ -133,7 +133,7 @@ Manages the unique identifier, sender/receiver agents, and retry count for a han
 ```json
 {
   "handoff_id": "hf_20260413a3b4c5",
-  "schema_version": "1.0.0",
+  "schema_version": "1.1.0",
   "created_at": "2026-04-13T09:23:11Z",
   "expires_at": "2026-04-14T09:23:11Z",
   "from_agent": "backend",

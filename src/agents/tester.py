@@ -12,8 +12,8 @@ from .base import BaseAgent
 class TesterAgent(BaseAgent):
     """테스트 전문 에이전트."""
 
-    def __init__(self, a2a_router: A2ARouter | None = None) -> None:
-        super().__init__(role=AgentRole.TESTER, a2a_router=a2a_router)
+    def __init__(self, a2a_router: A2ARouter | None = None, **kwargs) -> None:
+        super().__init__(role=AgentRole.TESTER, a2a_router=a2a_router, **kwargs)
 
     def _build_system_prompt(
         self,

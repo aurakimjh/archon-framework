@@ -132,7 +132,7 @@ class TestPrepareReworkHandoff:
         original = _make_handoff()
         review_result = _make_result_handoff(GateDecision.L1_REWORK)
         review_result.quality_gates.review_flags = [
-            ReviewFlag(severity="warning", category="naming", detail="bad variable name"),
+            ReviewFlag(severity="low", category="naming", detail="bad variable name"),
         ]
         rework = o._prepare_rework_handoff(original, review_result, retry_count=1)
         assert "Rework Required" in rework.task.next_instructions

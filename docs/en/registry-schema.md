@@ -155,7 +155,7 @@ QA thresholds, Human Gate criteria, token budget, and Dynamic Guardrails configu
 | `require_human_on_schema_change` | `bool` | `true` | Auto-trigger L2 Human Gate on DB schema changes |
 | `require_human_on_external_integration` | `bool` | `true` | Auto-trigger L2 Human Gate when external API integrations are detected |
 | `daily_token_budget` | `int` | `500` | Daily token budget (in thousands). Exceeding triggers a warning |
-| `sop_compliance_threshold` | `int` | `70` | Minimum SOP compliance score (0-100). Below this triggers L1 rework. Skipped when no SOP file exists |
+| `sop_compliance_threshold` | `int` | `70` | Minimum SOP compliance score (0-100). Below this triggers L2 Human Gate. Skipped when no SOP file exists |
 | `high_risk_paths` | `list[str]` | `[]` | File path patterns that auto-trigger L2 Human Gate when modified |
 | `high_risk_keywords` | `list[str]` | `[]` | Task instruction keywords that auto-trigger L2 Human Gate |
 

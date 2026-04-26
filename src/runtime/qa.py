@@ -29,9 +29,16 @@ class SubprocessResult:
         return self.returncode == 0
 
 
-async def _run(cmd: list[str], cwd: str | None = None) -> SubprocessResult:
-    """비동기 subprocess 실행."""
-    logger.debug("Running: %s", " ".join(cmd))
+QA_SUBPROCESS_TIMEOUT = 300  # 5분 기본 타임아웃
+
+
+async def _run(
+    cmd: list[str],
+    cwd: str | None = None,
+    timeout: int = QA_SUBPROCESS_TIMEOUT,
+) -> SubprocessResult:
+    """비동기 subprocess 실행 (타임아웃 포함)."""
+    logger.debug("Running: %s (timeout=%ds)", " ".join(cmd), timeout)
     try:
         proc = await asyncio.create_subprocess_exec(
             *cmd,
@@ -39,11 +46,21 @@ async def _run(cmd: list[str], cwd: str | None = None) -> SubprocessResult:
             stderr=asyncio.subprocess.PIPE,
             cwd=cwd,
         )
-        stdout_bytes, stderr_bytes = await proc.communicate()
+        stdout_bytes, stderr_bytes = await asyncio.wait_for(
+            proc.communicate(), timeout=timeout,
+        )
         return SubprocessResult(
             returncode=proc.returncode or 0,
             stdout=stdout_bytes.decode(errors="replace"),
             stderr=stderr_bytes.decode(errors="replace"),
+        )
+    except TimeoutError:
+        proc.kill()  # type: ignore[union-attr]
+        logger.error("Command timed out after %ds: %s", timeout, " ".join(cmd))
+        return SubprocessResult(
+            returncode=-2,
+            stdout="",
+            stderr=f"timeout after {timeout}s",
         )
     except FileNotFoundError:
         logger.warning("Command not found: %s", cmd[0])
@@ -195,12 +212,50 @@ async def run_coverage(
     return 0.0
 
 
+async def run_sop_compliance(
+    project_root: str,
+    sop_path: str | None = None,
+) -> int | None:
+    """SOP 체크리스트 커버리지를 산출한다.
+
+    .harness/sop/production/ 하위의 역할별 SOP 파일을 읽어
+    체크리스트 항목 중 완료된 비율을 반환한다.
+    SOP 파일이 없으면 None(미검사).
+    """
+    sop_dir = Path(project_root) / (sop_path or ".harness/sop/production")
+    if not sop_dir.is_dir():
+        logger.debug("SOP directory not found: %s", sop_dir)
+        return None
+
+    total_items = 0
+    checked_items = 0
+
+    for md_file in sop_dir.glob("*.md"):
+        try:
+            content = md_file.read_text(encoding="utf-8")
+        except OSError:
+            continue
+        for line in content.splitlines():
+            stripped = line.strip()
+            if stripped.startswith("- [ ]") or stripped.startswith("- [x]"):
+                total_items += 1
+                if stripped.startswith("- [x]"):
+                    checked_items += 1
+
+    if total_items == 0:
+        return None
+
+    score = int((checked_items / total_items) * 100)
+    logger.info("SOP compliance: %d/%d items (%d%%)", checked_items, total_items, score)
+    return score
+
+
 async def run_qa_pipeline(
     project_root: str,
     registry: ProjectRegistry,
     run_id: str | None = None,
 ) -> QualityGates:
-    """전체 QA 파이프라인 실행. 병렬로 lint, typecheck, test, build, security를 돌린다.
+    """전체 QA 파이프라인 실행. 병렬로 lint, typecheck, test, build, security, SOP를 돌린다.
 
     Args:
         project_root: 프로젝트 루트 경로.
@@ -216,9 +271,17 @@ async def run_qa_pipeline(
     test_task = asyncio.create_task(run_tests(project_root, run_id=rid))
     security_task = asyncio.create_task(run_security_scan(project_root))
     coverage_task = asyncio.create_task(run_coverage(project_root, run_id=rid))
+    sop_task = asyncio.create_task(run_sop_compliance(
+        project_root,
+        sop_path=registry.git_config.sop_directory,
+    ))
 
-    lint_result, build_result, test_results, security_scan, coverage = await asyncio.gather(
-        lint_task, build_task, test_task, security_task, coverage_task,
+    (
+        lint_result, build_result, test_results,
+        security_scan, coverage, sop_score,
+    ) = await asyncio.gather(
+        lint_task, build_task, test_task,
+        security_task, coverage_task, sop_task,
     )
 
     test_results.coverage_percent = coverage
@@ -228,15 +291,18 @@ async def run_qa_pipeline(
         lint_result=lint_result,
         build_result=build_result,
         security_scan=security_scan,
+        sop_compliance_score=sop_score,
     )
 
     logger.info(
-        "QA results — lint: %s, build: %s, tests: %d passed / %d failed, coverage: %.1f%%",
+        "QA results — lint: %s, build: %s, tests: %d passed / %d failed, "
+        "coverage: %.1f%%, sop: %s",
         lint_result,
         build_result,
         test_results.unit_passed,
         test_results.unit_failed,
         coverage,
+        f"{sop_score}%" if sop_score is not None else "N/A",
     )
 
     return quality
