@@ -24,7 +24,8 @@ from src.orchestrator.handoff import (
     HandoffArtifact,
     HumanGatePackage,
 )
-from src.registry.models import AgentRole, ProjectRegistry
+from src.gate.consensus import ConsensusGate, ConsensusResult, ConsensusStrategy
+from src.registry.models import AgentRole, MultiProviderMode, ProjectRegistry
 
 logger = logging.getLogger(__name__)
 slog = get_logger(__name__)
@@ -262,6 +263,11 @@ class Orchestrator:
             if reviewer:
                 result = await reviewer.execute(result, registry)
 
+            # Multi-Provider 리뷰 (SINGLE이 아닌 경우)
+            reviewer_config = registry.agent_config.get(AgentRole.REVIEWER)
+            if reviewer_config and reviewer_config.multi_provider_mode != MultiProviderMode.SINGLE:
+                result = await self._run_multi_provider_review(result, registry)
+
         # Dynamic Guardrails 인자 준비
         changed_paths = [cf.path for cf in result.artifacts.changed_files]
         has_schema = any(
@@ -498,4 +504,166 @@ class Orchestrator:
             trigger_reason="Production deployment requested",
             required_decision="Approve production deployment?",
             estimated_review_time="10분",
+        )
+
+    # ------------------------------------------------------------------
+    # Multi-Provider Review
+    # ------------------------------------------------------------------
+
+    async def _run_multi_provider_review(
+        self,
+        result: HandoffArtifact,
+        registry: ProjectRegistry,
+    ) -> HandoffArtifact:
+        """Multi-Provider 모드에 따라 다중 모델 리뷰를 실행한다.
+
+        SHADOW:    primary 결과 유지 + 다른 모델 비차단 비교 로깅.
+        CONSENSUS: 다중 모델 합의로 gate_decision 교체.
+        STRICT:    합의 실패 시 L2_HUMAN 강제 상향.
+        """
+        reviewer_config = registry.agent_config.get(AgentRole.REVIEWER)
+        if not reviewer_config or not reviewer_config.review_models:
+            return result
+
+        mode = reviewer_config.multi_provider_mode
+        models = reviewer_config.review_models
+
+        review_prompt = self._build_consensus_prompt(result)
+        strategy = ConsensusStrategy(reviewer_config.consensus_strategy)
+        gate = ConsensusGate(
+            strategy=strategy,
+            score_divergence_threshold=reviewer_config.score_divergence_threshold,
+            timeout=reviewer_config.timeout_seconds,
+        )
+
+        slog.info(
+            "multi_provider_review_start",
+            mode=mode,
+            models=models,
+            strategy=strategy,
+            task_id=result.task.task_id,
+        )
+
+        if mode == MultiProviderMode.SHADOW:
+            return await self._run_shadow_review(result, gate, review_prompt, models)
+
+        if mode == MultiProviderMode.CONSENSUS:
+            return await self._run_consensus_review(result, gate, review_prompt, models)
+
+        if mode == MultiProviderMode.STRICT:
+            return await self._run_strict_review(result, gate, review_prompt, models)
+
+        return result
+
+    async def _run_shadow_review(
+        self,
+        result: HandoffArtifact,
+        gate: ConsensusGate,
+        prompt: str,
+        models: list[str],
+    ) -> HandoffArtifact:
+        """SHADOW — primary 결과를 유지하고, 다른 모델 결과는 비교 로깅만."""
+        import asyncio
+
+        async def _shadow_task() -> None:
+            consensus = await gate.run_consensus(prompt, models)
+            slog.info(
+                "shadow_review_complete",
+                primary_score=result.quality_gates.review_score,
+                primary_gate=str(result.quality_gates.gate_decision),
+                consensus_score=consensus.final_score,
+                consensus_gate=str(consensus.final_decision),
+                consensus_reached=consensus.consensus_reached,
+                variance=consensus.score_variance,
+                task_id=result.task.task_id,
+            )
+
+        asyncio.create_task(_shadow_task())
+        return result
+
+    async def _run_consensus_review(
+        self,
+        result: HandoffArtifact,
+        gate: ConsensusGate,
+        prompt: str,
+        models: list[str],
+    ) -> HandoffArtifact:
+        """CONSENSUS — 다중 모델 합의로 review_score와 gate_decision을 교체."""
+        consensus = await gate.run_consensus(prompt, models)
+        self._merge_consensus(result, consensus)
+        return result
+
+    async def _run_strict_review(
+        self,
+        result: HandoffArtifact,
+        gate: ConsensusGate,
+        prompt: str,
+        models: list[str],
+    ) -> HandoffArtifact:
+        """STRICT — 합의 실패 시 L2_HUMAN으로 강제 상향."""
+        consensus = await gate.run_consensus(prompt, models)
+        self._merge_consensus(result, consensus)
+
+        if not consensus.consensus_reached:
+            logger.warning(
+                "STRICT mode — consensus not reached (variance=%.2f), escalating to L2_HUMAN",
+                consensus.score_variance,
+            )
+            result.quality_gates.gate_decision = GateDecision.L2_HUMAN
+            result.human_gate_package = HumanGatePackage(
+                gate_level=GateDecision.L2_HUMAN,
+                trigger_reason=(
+                    f"Multi-provider strict mode: consensus not reached. "
+                    f"Score variance={consensus.score_variance:.1f}, "
+                    f"dissenting={consensus.dissenting_models}"
+                ),
+                required_decision="Review model disagreements and decide how to proceed.",
+                estimated_review_time="10분",
+            )
+        return result
+
+    @staticmethod
+    def _merge_consensus(result: HandoffArtifact, consensus: ConsensusResult) -> None:
+        """ConsensusResult를 QualityGates에 병합한다."""
+        qg = result.quality_gates
+        qg.consensus_score = consensus.final_score
+        qg.consensus_reached = consensus.consensus_reached
+        qg.score_variance = consensus.score_variance
+        qg.dissenting_models = list(consensus.dissenting_models)
+
+        if consensus.success_count > 0:
+            qg.review_score = round(consensus.final_score)
+            qg.gate_decision = consensus.final_decision
+
+            for review in consensus.reviews:
+                if review.is_success:
+                    for flag in review.flags:
+                        from src.orchestrator.handoff import ReviewFlag
+                        try:
+                            qg.review_flags.append(ReviewFlag(
+                                severity=flag.get("severity", "low"),
+                                category=flag.get("category", "consensus"),
+                                detail=f"[{review.model}] {flag.get('detail', '')}",
+                            ))
+                        except Exception:
+                            pass
+
+    @staticmethod
+    def _build_consensus_prompt(result: HandoffArtifact) -> str:
+        """ConsensusGate에 전달할 리뷰 프롬프트를 빌드한다."""
+        changed = "\n".join(
+            f"- {f.path} ({f.change_type}): {f.reason}"
+            for f in result.artifacts.changed_files
+        )
+        return (
+            f"## Task\n{result.task.next_instructions}\n\n"
+            f"## Completed Summary\n{result.task.completed_summary}\n\n"
+            f"## Changed Files\n{changed}\n\n"
+            f"## Current QA Results\n"
+            f"- Lint: {result.quality_gates.lint_result}\n"
+            f"- Build: {result.quality_gates.build_result}\n"
+            f"- Tests: {result.quality_gates.test_results.unit_passed} passed, "
+            f"{result.quality_gates.test_results.unit_failed} failed\n"
+            f"- Coverage: {result.quality_gates.test_results.coverage_percent}%\n"
+            f"- Primary Review Score: {result.quality_gates.review_score}\n"
         )

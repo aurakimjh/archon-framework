@@ -7,6 +7,7 @@ from collections.abc import Callable
 from dataclasses import dataclass
 from typing import Any
 
+from src.gate.consensus import ConsensusGate, ConsensusStrategy
 from src.gate.evaluator import evaluate_gate
 from src.gate.models import GateDecision
 from src.log import get_logger
@@ -20,7 +21,7 @@ from src.orchestrator.handoff import (
     SecurityScan,
     TestResults,
 )
-from src.registry.models import ProjectRegistry
+from src.registry.models import AgentRole, MultiProviderMode, ProjectRegistry
 
 _log = logging.getLogger(__name__)
 slog = get_logger(__name__)
@@ -223,6 +224,45 @@ class DemoPipeline:
         return await ReviewerAgent().execute(handoff, self.registry)
 
     # ------------------------------------------------------------------
+    # Multi-Provider Cross-Review
+    # ------------------------------------------------------------------
+
+    async def _run_multi_provider_step(
+        self,
+        review_result: HandoffArtifact,
+        reviewer_config: object,
+    ) -> HandoffArtifact:
+        """Multi-Provider 리뷰를 실행하고 결과를 병합한다."""
+        from src.orchestrator.orchestrator import Orchestrator
+
+        mode = reviewer_config.multi_provider_mode  # type: ignore[union-attr]
+        models = reviewer_config.review_models  # type: ignore[union-attr]
+        strategy = ConsensusStrategy(reviewer_config.consensus_strategy)  # type: ignore[union-attr]
+
+        gate = ConsensusGate(
+            strategy=strategy,
+            score_divergence_threshold=reviewer_config.score_divergence_threshold,  # type: ignore[union-attr]
+            timeout=reviewer_config.timeout_seconds,  # type: ignore[union-attr]
+        )
+        prompt = Orchestrator._build_consensus_prompt(review_result)
+        consensus = await gate.run_consensus(prompt, models)
+        Orchestrator._merge_consensus(review_result, consensus)
+
+        if mode == MultiProviderMode.STRICT and not consensus.consensus_reached:
+            review_result.quality_gates.gate_decision = GateDecision.L2_HUMAN
+            review_result.human_gate_package = HumanGatePackage(
+                gate_level=GateDecision.L2_HUMAN,
+                trigger_reason=(
+                    f"Multi-provider strict mode: consensus not reached. "
+                    f"Score variance={consensus.score_variance:.1f}, "
+                    f"dissenting={consensus.dissenting_models}"
+                ),
+                required_decision="Review model disagreements and decide how to proceed.",
+            )
+
+        return review_result
+
+    # ------------------------------------------------------------------
     # L1 rework handoff preparation
     # ------------------------------------------------------------------
 
@@ -320,6 +360,18 @@ class DemoPipeline:
                 "review_score": review_result.quality_gates.review_score,
                 "flags": review_result.quality_gates.review_flags,
             })
+
+            # 3.5. Multi-Provider Cross-Review (SINGLE이 아닌 경우)
+            reviewer_config = self.registry.agent_config.get(AgentRole.REVIEWER)
+            if reviewer_config and reviewer_config.multi_provider_mode != MultiProviderMode.SINGLE:
+                self._emit("consensus", f"{tag}Multi-Provider 리뷰 실행 중...")
+                review_result = await self._run_multi_provider_step(review_result, reviewer_config)
+                self._emit("consensus_done", {
+                    "consensus_score": review_result.quality_gates.consensus_score,
+                    "consensus_reached": review_result.quality_gates.consensus_reached,
+                    "variance": review_result.quality_gates.score_variance,
+                    "dissenting": review_result.quality_gates.dissenting_models,
+                })
 
             # 4. Gate
             gate = evaluate_gate(

@@ -8,7 +8,10 @@ import pytest
 from src.evolution.models import EvolutionConfig
 from src.observability.config import TracingBackend, TracingConfig
 from src.registry.models import (
+    AgentModelConfig,
+    AgentRole,
     GitConfig,
+    MultiProviderMode,
     ProjectMeta,
     ProjectRegistry,
     TaskRef,
@@ -236,3 +239,42 @@ class TestPhase3ConfigIntegration:
         assert loaded.hybrid_config is not None
         assert loaded.hybrid_config.cloud_budget_daily_usd == 200.0
         assert loaded.kuberay_config is None
+
+
+# ---------------------------------------------------------------------------
+# Multi-Provider Config 통합
+# ---------------------------------------------------------------------------
+
+
+class TestMultiProviderConfigIntegration:
+    def test_agent_model_config_defaults_to_single_provider(self):
+        config = AgentModelConfig(model="reviewer-primary")
+        assert config.multi_provider_mode == MultiProviderMode.SINGLE
+        assert config.review_models == []
+        assert config.consensus_strategy == "majority"
+        assert config.score_divergence_threshold == 20.0
+
+    def test_registry_roundtrip_with_multi_provider_config(
+        self, store: RegistryStore
+    ) -> None:
+        reg = ProjectRegistry(
+            project_meta=ProjectMeta(project_id="p-mp", project_name="Multi Provider"),
+            git_config=GitConfig(repo_url="https://example.com/repo"),
+            agent_config={
+                AgentRole.REVIEWER: AgentModelConfig(
+                    model="reviewer-primary",
+                    multi_provider_mode=MultiProviderMode.STRICT,
+                    review_models=["model-a", "model-b"],
+                    consensus_strategy="unanimous",
+                    score_divergence_threshold=12.5,
+                )
+            },
+        )
+        store.save(reg)
+        loaded = store.load("p-mp")
+
+        reviewer = loaded.agent_config[AgentRole.REVIEWER]
+        assert reviewer.multi_provider_mode == MultiProviderMode.STRICT
+        assert reviewer.review_models == ["model-a", "model-b"]
+        assert reviewer.consensus_strategy == "unanimous"
+        assert reviewer.score_divergence_threshold == 12.5

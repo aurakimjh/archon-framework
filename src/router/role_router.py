@@ -42,6 +42,18 @@ def get_model_for_role(role: str, registry: ProjectRegistry | None = None) -> st
     return ROLE_MODEL_MAP.get(role, "backend-agent")
 
 
+def get_review_models(registry: ProjectRegistry) -> list[str]:
+    """Multi-Provider 리뷰에 사용할 모델 목록을 반환한다.
+
+    AgentModelConfig.review_models가 설정되어 있으면 그대로 반환,
+    없으면 빈 리스트.
+    """
+    config = registry.agent_config.get(AgentRole.REVIEWER)
+    if config and config.review_models:
+        return list(config.review_models)
+    return []
+
+
 def get_model_for_handoff(
     role: str,
     handoff: HandoffArtifact,

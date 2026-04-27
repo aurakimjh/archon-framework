@@ -38,6 +38,13 @@ class AgentRole(StrEnum):
     DOCS = "docs"
 
 
+class MultiProviderMode(StrEnum):
+    SINGLE = "single"         # 기존 단일 모델
+    SHADOW = "shadow"         # primary 결과 사용 + 다른 모델은 비차단 비교만
+    CONSENSUS = "consensus"   # 다수결 합의
+    STRICT = "strict"         # 불일치 시 L2_HUMAN 상향
+
+
 # --- Sub-models ---
 
 class ProjectMeta(BaseModel):
@@ -77,6 +84,11 @@ class AgentModelConfig(BaseModel):
     high_complexity_model: str | None = None
     # 모델 컨텍스트 윈도우 (토큰 수). None이면 max_tokens * 3으로 추정
     context_window_tokens: int | None = None
+    # Multi-Provider — 다중 모델 리뷰/합의
+    multi_provider_mode: MultiProviderMode = MultiProviderMode.SINGLE
+    review_models: list[str] = Field(default_factory=list)
+    consensus_strategy: str = "majority"
+    score_divergence_threshold: float = 20.0
 
 
 class QualityPolicy(BaseModel):

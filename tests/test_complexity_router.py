@@ -17,6 +17,7 @@ from src.registry.models import (
     AgentModelConfig,
     AgentRole,
     GitConfig,
+    MultiProviderMode,
     ProjectMeta,
     ProjectRegistry,
 )
@@ -26,7 +27,7 @@ from src.router.complexity import (
     measure_complexity,
     select_model_by_complexity,
 )
-from src.router.role_router import get_model_for_handoff
+from src.router.role_router import get_model_for_handoff, get_review_models
 
 
 # --- 헬퍼 ---
@@ -238,3 +239,41 @@ class TestGetModelForHandoff:
         handoff = _make_handoff(instructions="Complex migration refactor")
         model = get_model_for_handoff("backend", handoff, registry)
         assert model == "qwen-27b"
+
+
+class TestGetReviewModels:
+    def test_returns_configured_review_models(self):
+        registry = ProjectRegistry(
+            project_meta=ProjectMeta(project_id="proj_test", project_name="Test"),
+            git_config=GitConfig(repo_url="https://example.com/repo.git"),
+            agent_config={
+                AgentRole.REVIEWER: AgentModelConfig(
+                    model="reviewer-primary",
+                    multi_provider_mode=MultiProviderMode.CONSENSUS,
+                    review_models=["model-a", "model-b"],
+                )
+            },
+        )
+
+        assert get_review_models(registry) == ["model-a", "model-b"]
+
+    def test_returns_empty_list_without_reviewer_config(self):
+        assert get_review_models(_make_registry()) == []
+
+    def test_returns_copy_of_review_models(self):
+        registry = ProjectRegistry(
+            project_meta=ProjectMeta(project_id="proj_test", project_name="Test"),
+            git_config=GitConfig(repo_url="https://example.com/repo.git"),
+            agent_config={
+                AgentRole.REVIEWER: AgentModelConfig(
+                    model="reviewer-primary",
+                    multi_provider_mode=MultiProviderMode.CONSENSUS,
+                    review_models=["model-a"],
+                )
+            },
+        )
+
+        models = get_review_models(registry)
+        models.append("mutated")
+
+        assert registry.agent_config[AgentRole.REVIEWER].review_models == ["model-a"]

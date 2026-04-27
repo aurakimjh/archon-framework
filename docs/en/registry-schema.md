@@ -104,6 +104,18 @@ Specifies the LLM model and parameters per role. Each agent role (orchestrator, 
 | `timeout_seconds` | `int` | `300` | Agent execution timeout in seconds. Execution is aborted if this time is exceeded |
 | `high_complexity_model` | `str` \| `null` | `null` | Model to use when the Complexity Router scores HIGH. When null, the base `model` is used |
 | `reviewer_guidelines_path` | `str` \| `null` | `null` | Path to reviewer guidelines file (used only by the reviewer role) |
+| `context_window_tokens` | `int` \| `null` | `null` | Model context window (tokens). When null, estimated as `max_tokens × 3` |
+| `prompt_overlay_path` | `str` \| `null` | `null` | Path to a private prompt overlay file |
+| `multi_provider_mode` | `str` | `"single"` | Multi-Provider mode. `"single"` \| `"shadow"` \| `"consensus"` \| `"strict"` |
+| `review_models` | `list[str]` | `[]` | Models used for Multi-Provider review (e.g., `["gpt-4o", "gemini-2.0-flash"]`) |
+| `consensus_strategy` | `str` | `"majority"` | Consensus strategy. `"majority"` \| `"unanimous"` \| `"strictest"` |
+| `score_divergence_threshold` | `float` | `20.0` | Score variance threshold. Values above this are treated as consensus failure |
+
+**Multi-Provider modes:**
+- **single**: Traditional single-model review (default)
+- **shadow**: Uses primary reviewer result; additional models run in background for comparison logging only
+- **consensus**: Sends the same review to all `review_models` and resolves via consensus strategy
+- **strict**: Same as consensus, but escalates to L2_HUMAN when consensus is not reached
 
 **When to use:**
 - **streaming**: Set to `true` when you want to monitor progress in real time during long code generation tasks.
@@ -126,7 +138,11 @@ Specifies the LLM model and parameters per role. Each agent role (orchestrator, 
     "temperature": 0.1,
     "streaming": false,
     "timeout_seconds": 300,
-    "reviewer_guidelines_path": ".harness/guidelines/review.md"
+    "reviewer_guidelines_path": ".harness/guidelines/review.md",
+    "multi_provider_mode": "consensus",
+    "review_models": ["claude-sonnet-4-6", "gpt-4o", "gemini-2.0-flash"],
+    "consensus_strategy": "majority",
+    "score_divergence_threshold": 20.0
   },
   "backend": {
     "model": "ollama/deepseek-v3.2:70b",

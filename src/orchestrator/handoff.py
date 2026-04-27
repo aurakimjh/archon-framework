@@ -137,6 +137,11 @@ class QualityGates(BaseModel):
     gate_decision: GateDecision = GateDecision.L2_HUMAN
     sop_compliance_score: int | None = Field(default=None, ge=0, le=100)
     path_guard_human_gate: bool = False
+    # Multi-Provider Consensus
+    consensus_score: float | None = None
+    consensus_reached: bool | None = None
+    score_variance: float | None = None
+    dissenting_models: list[str] = Field(default_factory=list)
 
 
 # --- Human Gate Package ---

@@ -2,13 +2,36 @@
 
 from __future__ import annotations
 
+from unittest.mock import AsyncMock, patch
+
+from src.gate.consensus import ConsensusResult, ConsensusStrategy, ModelReview
 from src.gate.models import GateDecision
 from src.orchestrator.handoff import Envelope, HandoffArtifact, ProjectContext, Task, TechStack
 from src.pipeline.demo_pipeline import DemoPipeline
-from src.registry.models import GitConfig, ProjectMeta, ProjectRegistry, QualityPolicy
+from src.registry.models import (
+    AgentModelConfig,
+    AgentRole,
+    GitConfig,
+    MultiProviderMode,
+    ProjectMeta,
+    ProjectRegistry,
+    QualityPolicy,
+)
 
 
-def _make_registry(max_retry: int = 3) -> ProjectRegistry:
+def _make_registry(
+    max_retry: int = 3,
+    multi_provider_mode: MultiProviderMode = MultiProviderMode.SINGLE,
+) -> ProjectRegistry:
+    agent_config = {}
+    if multi_provider_mode != MultiProviderMode.SINGLE:
+        agent_config[AgentRole.REVIEWER] = AgentModelConfig(
+            model="reviewer-primary",
+            multi_provider_mode=multi_provider_mode,
+            review_models=["model-a", "model-b"],
+            score_divergence_threshold=20.0,
+        )
+
     return ProjectRegistry(
         project_meta=ProjectMeta(project_id="test-001", project_name="Test Project"),
         git_config=GitConfig(repo_url="https://github.com/test/repo.git"),
@@ -17,6 +40,7 @@ def _make_registry(max_retry: int = 3) -> ProjectRegistry:
             review_score_threshold=70,
             max_retry_before_escalation=max_retry,
         ),
+        agent_config=agent_config,
     )
 
 
@@ -106,6 +130,92 @@ async def test_step_callback_fired_for_all_stages() -> None:
     assert "reviewer_done" in fired
     assert "gate" in fired
     assert "commit" in fired
+
+
+async def test_multi_provider_consensus_callback_fired() -> None:
+    """Multi-Provider 설정 시 consensus 단계 이벤트와 결과를 노출한다."""
+    fired: list[str] = []
+    result_payloads: list[object] = []
+    consensus = ConsensusResult(
+        reviews=[
+            ModelReview(
+                model="model-a",
+                review_score=90,
+                gate_decision=GateDecision.AUTO_PASS,
+            ),
+            ModelReview(
+                model="model-b",
+                review_score=86,
+                gate_decision=GateDecision.AUTO_PASS,
+            ),
+        ],
+        strategy=ConsensusStrategy.MAJORITY,
+        final_decision=GateDecision.AUTO_PASS,
+        final_score=88.0,
+        consensus_reached=True,
+        score_variance=2.0,
+    )
+    pipeline = DemoPipeline(
+        registry=_make_registry(multi_provider_mode=MultiProviderMode.CONSENSUS),
+        mock=True,
+        scenario="auto_pass",
+        on_step=lambda step, data: (fired.append(step), result_payloads.append(data)),
+    )
+
+    with patch(
+        "src.gate.consensus.ConsensusGate.run_consensus",
+        new_callable=AsyncMock,
+        return_value=consensus,
+    ):
+        result = await pipeline.run(_make_handoff())
+
+    assert result.gate == GateDecision.AUTO_PASS
+    assert "consensus" in fired
+    assert "consensus_done" in fired
+    payload = result_payloads[fired.index("consensus_done")]
+    assert isinstance(payload, dict)
+    assert payload["consensus_score"] == 88.0
+    assert result.handoff.quality_gates.consensus_score == 88.0
+
+
+async def test_strict_multi_provider_consensus_failure_stays_l2() -> None:
+    """Strict 합의 실패는 일반 gate 재평가 후에도 AUTO_PASS로 덮이지 않는다."""
+    consensus = ConsensusResult(
+        reviews=[
+            ModelReview(
+                model="model-a",
+                review_score=92,
+                gate_decision=GateDecision.AUTO_PASS,
+            ),
+            ModelReview(
+                model="model-b",
+                review_score=88,
+                gate_decision=GateDecision.AUTO_PASS,
+            ),
+        ],
+        strategy=ConsensusStrategy.MAJORITY,
+        final_decision=GateDecision.AUTO_PASS,
+        final_score=90.0,
+        consensus_reached=False,
+        score_variance=25.0,
+        dissenting_models=["model-b"],
+    )
+    pipeline = DemoPipeline(
+        registry=_make_registry(multi_provider_mode=MultiProviderMode.STRICT),
+        mock=True,
+        scenario="auto_pass",
+    )
+
+    with patch(
+        "src.gate.consensus.ConsensusGate.run_consensus",
+        new_callable=AsyncMock,
+        return_value=consensus,
+    ):
+        result = await pipeline.run(_make_handoff())
+
+    assert result.gate == GateDecision.L2_HUMAN
+    assert result.handoff.quality_gates.gate_decision == GateDecision.L2_HUMAN
+    assert result.handoff.human_gate_package is not None
 
 
 async def test_l1_callback_fires_rework_event() -> None:

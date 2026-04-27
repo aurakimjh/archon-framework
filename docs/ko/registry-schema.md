@@ -104,6 +104,18 @@ Git 저장소, 브랜치 전략, SOP 경로, 보호 경로를 설정합니다.
 | `timeout_seconds` | `int` | `300` | 에이전트 실행 타임아웃 (초). 이 시간을 초과하면 실행이 중단됩니다 |
 | `high_complexity_model` | `str` \| `null` | `null` | Complexity Router가 HIGH로 판정했을 때 사용할 모델. null이면 `model`을 그대로 사용합니다 |
 | `reviewer_guidelines_path` | `str` \| `null` | `null` | 리뷰어 가이드라인 파일 경로 (reviewer 역할에서만 사용) |
+| `context_window_tokens` | `int` \| `null` | `null` | 모델 컨텍스트 윈도우 (토큰 수). null이면 `max_tokens × 3`으로 추정 |
+| `prompt_overlay_path` | `str` \| `null` | `null` | 프라이빗 프롬프트 오버레이 파일 경로 |
+| `multi_provider_mode` | `str` | `"single"` | Multi-Provider 모드. `"single"` \| `"shadow"` \| `"consensus"` \| `"strict"` |
+| `review_models` | `list[str]` | `[]` | Multi-Provider 리뷰에 사용할 모델 목록 (예: `["gpt-4o", "gemini-2.0-flash"]`) |
+| `consensus_strategy` | `str` | `"majority"` | 합의 전략. `"majority"` \| `"unanimous"` \| `"strictest"` |
+| `score_divergence_threshold` | `float` | `20.0` | 점수 분산 임계값. 이 값 이상이면 합의 실패로 간주 |
+
+**Multi-Provider 모드 설명:**
+- **single**: 기존 단일 모델 리뷰 (기본값)
+- **shadow**: primary 리뷰어 결과를 사용하고, 추가 모델은 백그라운드 비교 로깅만
+- **consensus**: 모든 `review_models`에 동일 리뷰를 요청하고 합의 전략에 따라 최종 판정
+- **strict**: consensus와 동일하되, 합의 실패 시 L2_HUMAN으로 강제 상향
 
 **사용 시점:**
 - **streaming**: 긴 코드 생성 작업에서 진행 상황을 실시간으로 모니터링하고 싶을 때 `true`로 설정하세요.
@@ -126,7 +138,11 @@ Git 저장소, 브랜치 전략, SOP 경로, 보호 경로를 설정합니다.
     "temperature": 0.1,
     "streaming": false,
     "timeout_seconds": 300,
-    "reviewer_guidelines_path": ".harness/guidelines/review.md"
+    "reviewer_guidelines_path": ".harness/guidelines/review.md",
+    "multi_provider_mode": "consensus",
+    "review_models": ["claude-sonnet-4-6", "gpt-4o", "gemini-2.0-flash"],
+    "consensus_strategy": "majority",
+    "score_divergence_threshold": 20.0
   },
   "backend": {
     "model": "ollama/deepseek-v3.2:70b",

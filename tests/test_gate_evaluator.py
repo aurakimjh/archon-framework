@@ -97,6 +97,43 @@ def test_l4_deploy():
     assert result == GateDecision.L4_DEPLOY
 
 
+# --- Multi-Provider Consensus ---
+
+
+def test_consensus_l2_is_not_overwritten_by_clean_quality():
+    """Consensus가 L2를 요구하면 일반 품질 지표가 깨끗해도 L2를 유지한다."""
+    q = _make_quality(
+        consensus_score=91.0,
+        consensus_reached=False,
+        gate_decision=GateDecision.L2_HUMAN,
+    )
+    result = evaluate_gate(q, _make_policy())
+    assert result == GateDecision.L2_HUMAN
+
+
+def test_consensus_l1_is_not_overwritten_by_auto_pass():
+    """Consensus가 L1을 요구하면 AUTO_PASS로 다운그레이드하지 않는다."""
+    q = _make_quality(
+        consensus_score=84.0,
+        consensus_reached=True,
+        gate_decision=GateDecision.L1_REWORK,
+    )
+    result = evaluate_gate(q, _make_policy())
+    assert result == GateDecision.L1_REWORK
+
+
+def test_policy_l2_is_not_downgraded_by_consensus_auto_pass():
+    """품질 정책이 더 엄격하면 consensus AUTO_PASS가 이를 덮지 못한다."""
+    q = _make_quality(
+        review_score=60,
+        consensus_score=92.0,
+        consensus_reached=True,
+        gate_decision=GateDecision.AUTO_PASS,
+    )
+    result = evaluate_gate(q, _make_policy())
+    assert result == GateDecision.L2_HUMAN
+
+
 # --- Dynamic Guardrails ---
 
 

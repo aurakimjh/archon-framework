@@ -13,6 +13,40 @@ from .models import GateDecision
 logger = logging.getLogger(__name__)
 slog = get_logger(__name__)
 
+_GATE_SEVERITY_ORDER: list[GateDecision] = [
+    GateDecision.AUTO_PASS,
+    GateDecision.L1_REWORK,
+    GateDecision.L2_HUMAN,
+    GateDecision.L3_HALT,
+    GateDecision.L4_DEPLOY,
+]
+
+
+def _gate_severity(decision: GateDecision) -> int:
+    try:
+        return _GATE_SEVERITY_ORDER.index(decision)
+    except ValueError:
+        return len(_GATE_SEVERITY_ORDER)
+
+
+def _apply_consensus_gate(
+    quality: QualityGates,
+    policy_decision: GateDecision,
+) -> GateDecision:
+    """Preserve the stricter result when multi-provider consensus has run."""
+    if quality.consensus_score is None:
+        return policy_decision
+
+    consensus_decision = quality.gate_decision
+    if _gate_severity(consensus_decision) > _gate_severity(policy_decision):
+        logger.info(
+            "Gate: %s — multi-provider consensus stricter than policy decision %s",
+            consensus_decision,
+            policy_decision,
+        )
+        return consensus_decision
+    return policy_decision
+
 
 def evaluate_gate(
     quality: QualityGates,
@@ -34,33 +68,33 @@ def evaluate_gate(
     # L4 — 배포 요청은 항상 Human 최종 승인
     if is_deploy_request:
         logger.info("Gate: L4_DEPLOY — deploy request requires human approval")
-        return GateDecision.L4_DEPLOY
+        return _apply_consensus_gate(quality, GateDecision.L4_DEPLOY)
 
     # L3 — 긴급 전체 중단 조건
     if _check_l3_halt(quality, retry_count):
-        return GateDecision.L3_HALT
+        return _apply_consensus_gate(quality, GateDecision.L3_HALT)
 
     # L2 — Human Gate 조건
     if _check_l2_human(quality, policy, has_schema_change, has_external_integration, retry_count):
-        return GateDecision.L2_HUMAN
+        return _apply_consensus_gate(quality, GateDecision.L2_HUMAN)
 
     # L2 — PathGuard Human Gate 강제
     if quality.path_guard_human_gate:
         logger.info("Gate: L2_HUMAN — PathGuard requires human gate")
         slog.warning("gate_decision", decision="L2_HUMAN", reasons=["path_guard_human_gate"])
-        return GateDecision.L2_HUMAN
+        return _apply_consensus_gate(quality, GateDecision.L2_HUMAN)
 
     # L2 — Dynamic Guardrails (위험 경로/키워드 감지)
     if _check_dynamic_guardrails(policy, changed_paths, task_instructions):
-        return GateDecision.L2_HUMAN
+        return _apply_consensus_gate(quality, GateDecision.L2_HUMAN)
 
     # L2 — SOP Compliance 미달
     if _check_sop_compliance(quality, policy):
-        return GateDecision.L2_HUMAN
+        return _apply_consensus_gate(quality, GateDecision.L2_HUMAN)
 
     # L1 — 에이전트 자동 재작업 조건
     if _check_l1_rework(quality, policy):
-        return GateDecision.L1_REWORK
+        return _apply_consensus_gate(quality, GateDecision.L1_REWORK)
 
     # 자동 통과
     logger.info("Gate: AUTO_PASS — all quality checks passed")
@@ -72,7 +106,7 @@ def evaluate_gate(
         lint=quality.lint_result,
         build=quality.build_result,
     )
-    return GateDecision.AUTO_PASS
+    return _apply_consensus_gate(quality, GateDecision.AUTO_PASS)
 
 
 def _check_l3_halt(quality: QualityGates, retry_count: int) -> bool:
