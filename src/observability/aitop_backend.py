@@ -72,7 +72,7 @@ class AitopTracer(ArchonTracer):
         return {
             "attributes": [
                 {"key": "service.name", "value": {"stringValue": self._service_name}},
-                {"key": "service.version", "value": {"stringValue": "0.1.0a1"}},
+                {"key": "service.version", "value": {"stringValue": "0.1.0"}},
                 {"key": "telemetry.sdk.name", "value": {"stringValue": "archon"}},
             ],
         }

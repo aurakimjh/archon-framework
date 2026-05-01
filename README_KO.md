@@ -6,7 +6,7 @@
 
 ## 개요
 
-Archon은 Claude를 마스터 오케스트레이터로, 오픈소스 LLM들을 전문 에이전트로 활용한다. 에이전트는 **무상태**다 — 태스크마다 [Handoff Artifact](docs/ko/handoff-schema.md)로 컨텍스트를 주입받으므로, 어떤 에이전트도 사전 상태 없이 어떤 프로젝트든 처리할 수 있다.
+Archon은 Claude, OpenAI, Gemini, 로컬 오픈소스 LLM을 모두 사용할 수 있는 provider-agnostic 오케스트레이션 프레임워크다. 에이전트는 **무상태**다 — 태스크마다 [Handoff Artifact](docs/ko/handoff-schema.md)로 컨텍스트를 주입받으므로, 어떤 에이전트도 사전 상태 없이 어떤 프로젝트든 처리할 수 있다.
 
 - [한국어 문서](docs/ko/)
 - [English Documentation](docs/en/)
@@ -17,7 +17,10 @@ Archon은 Claude를 마스터 오케스트레이터로, 오픈소스 LLM들을 �
 |---|---|---|
 | 에이전트 오케스트레이션 | ✅ | Handoff Artifact를 통한 컨텍스트 주입, 무상태 에이전트 |
 | Human Gate | ✅ | 5단계 판정: AUTO_PASS / L1_REWORK / L2_HUMAN / L3_HALT / L4_DEPLOY |
+| Multi-Provider Cross-Review | ✅ | Claude/OpenAI/Gemini 리뷰와 majority/unanimous/strictest 합의 전략 |
 | Dynamic Guardrails | ✅ | 고위험 경로/키워드(결제·인증·인프라) 감지 시 자동 L2 상향 |
+| Observability | ✅ | LangSmith/Langfuse/AITOP 트레이싱 미들웨어와 구조화 로그 |
+| Self-Evolution Loop | ✅ | 메트릭 수집, 드리프트 탐지, 제한된 자동 정책 튜닝 |
 | Complexity Router | ✅ | 8기준 복잡도 측정, 복잡 태스크에 `high_complexity_model` 라우팅 |
 | 3계층 메모리 | ✅ | L1 Redis 스크래치패드 · L2 ChromaDB 벡터 검색 · L3 Mem0 크로스 프로젝트 |
 | 비동기 스트리밍 | ✅ | BaseAgent의 `execute_streaming()`, litellm `stream=True` + 타임아웃 |
@@ -30,7 +33,7 @@ Archon은 Claude를 마스터 오케스트레이터로, 오픈소스 LLM들을 �
 | LLM 플러그인 교체 | ✅ | LiteLLM Proxy를 통한 역할별 모델 YAML 교체 |
 | 멀티 프로젝트 | ✅ | 공유 에이전트 풀 + 격리된 프로젝트 네임스페이스 |
 | 에어갭 지원 | ✅ | MLX/Ollama/vLLM로 로컬 오픈소스 LLM 실행 |
-| Ray 클러스터 | 🔧 | 로컬/클러스터/쿠버네티스 모드 (Phase 3) |
+| Ray 클러스터 | ✅ | 로컬/클러스터/쿠버네티스 모드와 KubeRay manifest 생성 |
 
 ## 아키텍처
 
@@ -41,7 +44,7 @@ Archon은 Claude를 마스터 오케스트레이터로, 오픈소스 LLM들을 �
 └────────────────────────┬────────────────────────────────┘
                          │ Human Gate (양방향)
 ┌────────────────────────▼────────────────────────────────┐
-│  Layer 1 — Orchestrator (Claude API)                    │
+│  Layer 1 — Orchestrator (Multi-provider LLMs)           │
 │  src/orchestrator/  — 설계·분배·리뷰·알림               │
 └────────────────────────┬────────────────────────────────┘
                          │ Handoff Artifact JSON
@@ -79,7 +82,7 @@ Archon은 Claude를 마스터 오케스트레이터로, 오픈소스 LLM들을 �
 │  Layer 7 — LLM Runtime                                  │
 │  src/runtime/vllm_bridge.py  — vLLM 엔드포인트 관리    │
 │  src/runtime/cluster.py      — Ray 클러스터             │
-│  MLX · Ollama · vLLM · Claude API                       │
+│  MLX · Ollama · vLLM · Claude · OpenAI · Gemini         │
 └─────────────────────────────────────────────────────────┘
 ```
 

@@ -4,8 +4,8 @@
 도구(tools)를 제공한다. MCP 프로토콜을 따르며, 각 도구는 JSON 기반
 입출력을 사용한다.
 
-실제 MCP SDK 연동은 Phase 3에서 진행하고, 여기서는 도구 정의와
-핸들러를 먼저 구현한다.
+이 모듈은 도구 정의와 인프로세스 핸들러를 제공한다. stdio/SSE 같은
+실제 전송 계층은 별도 어댑터에서 연결할 수 있다.
 """
 
 from __future__ import annotations
@@ -116,7 +116,7 @@ class MCPServer:
     """MCP 프로토콜 서버.
 
     도구(tool) 호출을 받아 Archon 프레임워크 기능을 실행한다.
-    실제 전송 계층(stdio, SSE 등)은 Phase 3에서 MCP SDK로 연동.
+    실제 전송 계층(stdio, SSE 등)은 별도 어댑터에서 연결할 수 있다.
     """
 
     def __init__(self) -> None:

@@ -6,7 +6,7 @@
 
 ## Overview
 
-Archon uses Claude as a master orchestrator and open-source LLMs as specialized agents. Agents are **stateless** — each task injects context via a [Handoff Artifact](docs/en/handoff-schema.md), so any agent can handle any project without prior state.
+Archon uses provider-agnostic orchestration across Claude, OpenAI, Gemini, and local open-source LLMs. Agents are **stateless** — each task injects context via a [Handoff Artifact](docs/en/handoff-schema.md), so any agent can handle any project without prior state.
 
 - [한국어 문서](docs/ko/)
 - [English Documentation](docs/en/)
@@ -17,7 +17,10 @@ Archon uses Claude as a master orchestrator and open-source LLMs as specialized 
 |---|---|---|
 | Agent Orchestration | ✅ | Stateless agents with context injection via Handoff Artifacts |
 | Human Gate | ✅ | 5-level decision framework: AUTO_PASS / L1_REWORK / L2_HUMAN / L3_HALT / L4_DEPLOY |
+| Multi-Provider Cross-Review | ✅ | Claude/OpenAI/Gemini reviews with majority, unanimous, and strictest consensus strategies |
 | Dynamic Guardrails | ✅ | Auto-escalate to L2 on high-risk paths/keywords (payment, auth, infra…) |
+| Observability | ✅ | LangSmith/Langfuse/AITOP tracing middleware with structured logs |
+| Self-Evolution Loop | ✅ | Metric collection, drift detection, and bounded automatic policy tuning |
 | Complexity Router | ✅ | 8-criteria scoring; routes to `high_complexity_model` for complex tasks |
 | 3-Layer Memory | ✅ | L1 Redis scratchpad · L2 ChromaDB vector search · L3 Mem0 cross-project patterns |
 | Async Streaming | ✅ | `execute_streaming()` on BaseAgent; litellm `stream=True` with timeout |
@@ -30,7 +33,7 @@ Archon uses Claude as a master orchestrator and open-source LLMs as specialized 
 | LLM Plugin Swap | ✅ | Role-based model routing via LiteLLM Proxy |
 | Multi-Project | ✅ | Isolated project namespaces with shared agent pools |
 | Air-gap Support | ✅ | Local open-source LLM execution via MLX/Ollama/vLLM |
-| Ray Cluster | 🔧 | Local/cluster/kubernetes modes (Phase 3) |
+| Ray Cluster | ✅ | Local/cluster/kubernetes modes with KubeRay manifest generation |
 
 ## Architecture
 
@@ -41,7 +44,7 @@ Archon uses Claude as a master orchestrator and open-source LLMs as specialized 
 └────────────────────────┬────────────────────────────────┘
                          │ Human Gate (bidirectional)
 ┌────────────────────────▼────────────────────────────────┐
-│  Layer 1 — Orchestrator (Claude API)                    │
+│  Layer 1 — Orchestrator (Multi-provider LLMs)           │
 │  src/orchestrator/  — design · dispatch · review        │
 └────────────────────────┬────────────────────────────────┘
                          │ Handoff Artifact JSON
@@ -79,7 +82,7 @@ Archon uses Claude as a master orchestrator and open-source LLMs as specialized 
 │  Layer 7 — LLM Runtime                                  │
 │  src/runtime/vllm_bridge.py  — vLLM endpoint management │
 │  src/runtime/cluster.py      — Ray cluster              │
-│  MLX · Ollama · vLLM · Claude API                       │
+│  MLX · Ollama · vLLM · Claude · OpenAI · Gemini         │
 └─────────────────────────────────────────────────────────┘
 ```
 

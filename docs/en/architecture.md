@@ -2,11 +2,11 @@
 
 🇰🇷 [한국어](../ko/architecture.md)
 
-> Version: 2.0.0 | Last updated: 2026-04-24
+> Version: 2.0.0 | Last updated: 2026-05-01
 
 ## Overview
 
-Archon is a multi-agent AI development platform built around a **7-layer architecture**. It uses the Claude API as the master orchestrator and open-source LLMs as specialized agents, enabling a solo developer to achieve team-level productivity.
+Archon is a multi-agent AI development platform built around a **7-layer architecture**. It uses provider-agnostic orchestration across Claude, OpenAI, Gemini, and local open-source LLMs, enabling a solo developer to achieve team-level productivity.
 
 This document explains the complete architecture of Archon. It focuses on what each layer does and why it was designed that way, so even newcomers can understand the overall flow.
 
@@ -33,10 +33,10 @@ Layer 0 — Human in the Loop
           │
           │ Human Gate (bidirectional)
           ▼
-Layer 1 — Orchestrator (Claude API)
+Layer 1 — Orchestrator (Multi-provider LLMs)
   src/orchestrator/orchestrator.py
   Master architect · code reviewer · Human Gate manager
-  Models: Claude Opus 4.6 (design) / Claude Sonnet 4.6 (review)
+  Models: primary model plus optional cross-review models via LiteLLM
           │
           │ MCP / A2A Protocol
           ▼
@@ -82,7 +82,7 @@ Layer 7 — LLM Runtime
   src/runtime/cluster.py       — Ray cluster
   src/runtime/kuberay.py       — KubeRay CRD management
   src/runtime/hybrid.py        — cloud hybrid scheduling
-  MLX (Apple Silicon) · Ollama · vLLM · Claude API
+  MLX (Apple Silicon) · Ollama · vLLM · Claude · OpenAI · Gemini
 ```
 
 ---
