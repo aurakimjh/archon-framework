@@ -61,3 +61,13 @@ class DashboardEvent(BaseModel):
     event_type: str
     payload: dict[str, Any] = Field(default_factory=dict)
     timestamp: datetime = Field(default_factory=lambda: datetime.now(UTC))
+
+
+class TaskRequest(BaseModel):
+    """작업 요청."""
+
+    project_id: str
+    instructions: str
+    scenario: str = "auto_pass"
+    mock: bool = True
+    agent_role: str = "backend"

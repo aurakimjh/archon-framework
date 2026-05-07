@@ -8,6 +8,7 @@ from pathlib import Path
 from typing import Any
 
 from src.dashboard.auth import extract_bearer_token, extract_ws_token, get_dashboard_token, verify_token
+from src.dashboard.models import TaskRequest
 from src.dashboard.routes import DashboardRoutes
 from src.dashboard.websocket import WebSocketManager
 from src.log import get_logger
@@ -116,6 +117,20 @@ class DashboardApp:
             if data is None:
                 return JSONResponse({"error": "not found"}, status_code=404)
             return data.model_dump()
+
+        @app.post("/api/tasks", dependencies=[Depends(require_auth)])
+        async def run_task(request: TaskRequest):
+            import asyncio
+            def on_step(step_name: str, data: Any):
+                # DemoPipeline은 sync 콜백을 기대하므로 create_task로 브로드캐스트
+                asyncio.create_task(ws_manager.broadcast_dict("pipeline_step", {
+                    "step": step_name,
+                    "data": data,
+                    "project_id": request.project_id
+                }))
+
+            result = await routes.run_task(request, on_step=on_step)
+            return result
 
         @app.get("/api/agents", dependencies=[Depends(require_auth)])
         async def list_agents():

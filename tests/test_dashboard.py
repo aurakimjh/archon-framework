@@ -282,6 +282,25 @@ class TestDashboardRoutes:
         result = await routes.list_costs()
         assert result == []
 
+    @pytest.mark.asyncio
+    async def test_run_task(self):
+        from src.dashboard.models import TaskRequest
+        routes = DashboardRoutes()
+        req = TaskRequest(
+            project_id="test-p",
+            instructions="test-instr",
+            scenario="auto_pass",
+            mock=True
+        )
+        
+        # mock on_step (sync)
+        on_step = MagicMock()
+        
+        result = await routes.run_task(req, on_step=on_step)
+        assert result["status"] == "started"
+        assert result["project_id"] == "test-p"
+        assert result["task_id"].startswith("task_")
+
 
 # ---------------------------------------------------------------------------
 # DashboardApp

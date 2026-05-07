@@ -95,6 +95,40 @@
     loadGates();
   };
 
+  /* --- Task Actions --- */
+  async function executeTask(e) {
+    e.preventDefault();
+    const project_id = el("task-project-id").value;
+    const instructions = el("task-instructions").value;
+    const scenario = el("task-scenario").value;
+    const mock = el("task-mock").checked;
+    const agent_role = el("task-agent-role").value;
+
+    if (!instructions) return alert("Please enter instructions");
+
+    const btn = e.target.querySelector("button");
+    btn.disabled = true;
+    btn.textContent = "Running...";
+
+    try {
+      const res = await fetch(`${API}/api/tasks`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ project_id, instructions, scenario, mock, agent_role })
+      });
+      if (res.ok) {
+        el("task-instructions").value = "";
+      } else {
+        alert("Failed to start task");
+      }
+    } catch (err) {
+      alert("Error: " + err.message);
+    } finally {
+      btn.disabled = false;
+      btn.textContent = "Execute Task";
+    }
+  }
+
   /* --- WebSocket --- */
   function connectWS() {
     const proto = location.protocol === "https:" ? "wss:" : "ws:";
@@ -102,9 +136,17 @@
     ws.onmessage = (e) => {
       const evt = JSON.parse(e.data);
       addEventLog(evt);
-      refresh();
+      if (evt.event_type !== "pipeline_step") {
+        refresh();
+      }
     };
-    ws.onclose = () => setTimeout(connectWS, 3000);
+    ws.onclose = () => {
+      el("connection-status").textContent = "Disconnected (reconnecting...)";
+      setTimeout(connectWS, 3000);
+    };
+    ws.onopen = () => {
+      el("connection-status").textContent = "Connected";
+    };
   }
 
   function addEventLog(evt) {
@@ -113,7 +155,16 @@
     const now = new Date().toLocaleTimeString();
     const div = document.createElement("div");
     div.className = "event-line";
-    div.innerHTML = `<span class="time">${now}</span> ${evt.event_type}: ${JSON.stringify(evt.payload)}`;
+
+    let content = "";
+    if (evt.event_type === "pipeline_step") {
+      const { step, data } = evt.payload;
+      content = `<span class="step-badge">${step}</span> ${typeof data === "string" ? data : JSON.stringify(data)}`;
+    } else {
+      content = `<span class="type-badge">${evt.event_type}</span> ${JSON.stringify(evt.payload)}`;
+    }
+
+    div.innerHTML = `<span class="time">${now}</span> ${content}`;
     log.prepend(div);
     while (log.children.length > 50) log.removeChild(log.lastChild);
   }
@@ -125,6 +176,7 @@
 
   document.addEventListener("DOMContentLoaded", () => {
     refresh();
+    el("task-form").addEventListener("submit", executeTask);
     setInterval(refresh, 15000);
     try { connectWS(); } catch (_) { /* ws optional */ }
   });

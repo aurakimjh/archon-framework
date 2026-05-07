@@ -103,6 +103,7 @@ class Orchestrator:
         self,
         handoff: HandoffArtifact,
         registry: ProjectRegistry,
+        on_step: Callable[[str, Any], None] | None = None,
     ) -> HandoffArtifact:
         """핸드오프를 받아 에이전트 실행 → QA → 리뷰 → Gate 판정 루프 수행.
 
@@ -137,10 +138,12 @@ class Orchestrator:
                 task_id=current_handoff.task.task_id,
                 project_id=current_handoff.project_context.project_id,
             )
+            if on_step:
+                on_step("loop", f"Attempt {attempt + 1}/{max_retries + 1}")
 
             # 1. 에이전트 실행 + 리뷰 + Gate 판정
             try:
-                result = await self._execute_pipeline(current_handoff, registry)
+                result = await self._execute_pipeline(current_handoff, registry, on_step)
             except Exception as exc:
                 logger.error(
                     "Pipeline exception on attempt %d for [%s]: %s",
@@ -156,6 +159,8 @@ class Orchestrator:
                     required_decision="Investigate pipeline failure and decide how to proceed.",
                     estimated_review_time="10분",
                 )
+                if on_step:
+                    on_step("error", f"Pipeline error: {exc}")
                 self._end_pipeline_span(_pipeline_span, result)
                 return result
             gate = result.quality_gates.gate_decision
@@ -163,6 +168,8 @@ class Orchestrator:
             # 2. Gate에 따른 분기
             if gate == GateDecision.AUTO_PASS:
                 await self._handle_auto_pass(result, registry)
+                if on_step:
+                    on_step("commit", f"Auto commit completed for {result.task.task_id}")
                 self._end_pipeline_span(_pipeline_span, result)
                 return result
 
@@ -174,6 +181,8 @@ class Orchestrator:
                         max_retries,
                         result.task.task_id,
                     )
+                    if on_step:
+                        on_step("l1_rework", f"재작업 지시 ({attempt + 1}/{max_retries}회 시도)")
                     # 리뷰 피드백을 다음 시도의 지시사항에 반영
                     current_handoff = self._prepare_rework_handoff(
                         original=handoff,
@@ -188,22 +197,30 @@ class Orchestrator:
                         max_retries,
                     )
                     result.quality_gates.gate_decision = GateDecision.L2_HUMAN
+                    if on_step:
+                        on_step("l2_escalated", f"L1 {max_retries}회 소진 → L2_HUMAN 에스컬레이션")
                     await self._handle_human_gate(result, registry, escalated=True)
                     self._end_pipeline_span(_pipeline_span, result)
                     return result
 
             # L2, L3, L4는 루프 중단
             if gate == GateDecision.L2_HUMAN:
+                if on_step:
+                    on_step("l2_human", "프로젝트 일시정지 — 개발자 판단 필요")
                 await self._handle_human_gate(result, registry)
                 self._end_pipeline_span(_pipeline_span, result)
                 return result
 
             if gate == GateDecision.L3_HALT:
+                if on_step:
+                    on_step("l3_halt", "긴급 중단 — 심각한 품질 문제")
                 await self._handle_halt(result, registry)
                 self._end_pipeline_span(_pipeline_span, result)
                 return result
 
             if gate == GateDecision.L4_DEPLOY:
+                if on_step:
+                    on_step("l4_deploy", "배포 승인 대기 — 개발자 최종 확인 필요")
                 await self._handle_deploy_gate(result, registry)
                 self._end_pipeline_span(_pipeline_span, result)
                 return result
@@ -227,6 +244,7 @@ class Orchestrator:
         self,
         handoff: HandoffArtifact,
         registry: ProjectRegistry,
+        on_step: Callable[[str, Any], None] | None = None,
     ) -> HandoffArtifact:
         """단일 실행 파이프라인: 에이전트 → QA → 리뷰 → Gate 판정."""
         target_role = handoff.envelope.to_agent
@@ -244,9 +262,19 @@ class Orchestrator:
         handoff.memory_context = memory_ctx
 
         # 에이전트 실행
+        if on_step:
+            on_step("agent_exec", f"{target_role.capitalize()} Agent 실행 중...")
         result = await agent.execute(handoff, registry)
+        if on_step:
+            on_step("agent_done", {
+                "role": target_role,
+                "summary": result.task.completed_summary,
+                "files": [f.path for f in result.artifacts.changed_files]
+            })
 
         # QA 파이프라인 실행 (Phase 1: 실제 subprocess 연동)
+        if on_step:
+            on_step("qa", "QA Pipeline 실행 중...")
         from src.runtime.qa import run_qa_pipeline
 
         qa_result = await run_qa_pipeline(
@@ -254,6 +282,15 @@ class Orchestrator:
             registry=registry,
         )
         result.quality_gates = qa_result
+        if on_step:
+            on_step("qa_done", {
+                "lint": qa_result.lint_result,
+                "build": qa_result.build_result,
+                "unit_passed": qa_result.test_results.unit_passed,
+                "unit_failed": qa_result.test_results.unit_failed,
+                "coverage": qa_result.test_results.coverage_percent,
+                "security": qa_result.security_scan.model_dump(),
+            })
 
         # 리뷰 (target이 reviewer가 아닌 경우)
         # ReviewerAgent._build_handoff_result()가 QA 결과를 보존하므로
@@ -261,12 +298,28 @@ class Orchestrator:
         if target_role != AgentRole.REVIEWER:
             reviewer = self._agent_pool.get(AgentRole.REVIEWER)
             if reviewer:
+                if on_step:
+                    on_step("reviewer", "Reviewer Agent 실행 중...")
                 result = await reviewer.execute(result, registry)
+                if on_step:
+                    on_step("reviewer_done", {
+                        "review_score": result.quality_gates.review_score,
+                        "flags": [f.model_dump() for f in result.quality_gates.review_flags]
+                    })
 
             # Multi-Provider 리뷰 (SINGLE이 아닌 경우)
             reviewer_config = registry.agent_config.get(AgentRole.REVIEWER)
             if reviewer_config and reviewer_config.multi_provider_mode != MultiProviderMode.SINGLE:
+                if on_step:
+                    on_step("consensus", "Multi-Provider 리뷰 실행 중...")
                 result = await self._run_multi_provider_review(result, registry)
+                if on_step:
+                    on_step("consensus_done", {
+                        "consensus_score": result.quality_gates.consensus_score,
+                        "consensus_reached": result.quality_gates.consensus_reached,
+                        "variance": result.quality_gates.score_variance,
+                        "dissenting": result.quality_gates.dissenting_models,
+                    })
 
         # Dynamic Guardrails 인자 준비
         changed_paths = [cf.path for cf in result.artifacts.changed_files]
@@ -288,6 +341,9 @@ class Orchestrator:
             has_external_integration=has_external,
         )
         result.quality_gates.gate_decision = gate
+        if on_step:
+            on_step("gate", {"decision": gate})
+
 
         # 알림 전송
         await self._send_notification(handoff, result, registry)

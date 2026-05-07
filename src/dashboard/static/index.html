@@ -37,6 +37,34 @@
     </div>
   </div>
 
+  <!-- Task Control -->
+  <div class="section">
+    <h2>Task Control</h2>
+    <div class="card">
+      <form id="task-form">
+        <div style="display: flex; gap: 10px; margin-bottom: 10px;">
+          <input type="text" id="task-project-id" placeholder="Project ID" value="demo-project" style="flex: 1;">
+          <select id="task-agent-role">
+            <option value="backend">Backend</option>
+            <option value="frontend">Frontend</option>
+            <option value="tester">Tester</option>
+            <option value="devops">DevOps</option>
+            <option value="docs">Docs</option>
+          </select>
+          <select id="task-scenario">
+            <option value="auto_pass">AUTO_PASS (Clean)</option>
+            <option value="l1">L1_REWORK (Lint Fail)</option>
+            <option value="l2">L2_HUMAN (Low Score)</option>
+            <option value="l1_exhausted">L1 Exhausted</option>
+          </select>
+          <label><input type="checkbox" id="task-mock" checked> Mock Mode</label>
+        </div>
+        <textarea id="task-instructions" placeholder="Enter task instructions here..." style="width: 100%; height: 80px; margin-bottom: 10px;"></textarea>
+        <button type="submit" class="primary">Execute Task</button>
+      </form>
+    </div>
+  </div>
+
   <!-- Projects Table -->
   <div class="section">
     <h2>Projects</h2>

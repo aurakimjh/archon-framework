@@ -99,8 +99,31 @@ th { color: var(--muted); font-weight: 500; }
 .section { margin-bottom: 2rem; }
 .section h2 { font-size: 1.1rem; margin-bottom: 1rem; }
 
+/* --- Form --- */
+input[type="text"], select, textarea {
+  background: var(--bg);
+  border: 1px solid var(--border);
+  color: var(--text);
+  padding: 8px 12px;
+  border-radius: 4px;
+  font-family: inherit;
+}
+textarea { resize: vertical; }
+button {
+  background: var(--surface);
+  border: 1px solid var(--border);
+  color: var(--text);
+  padding: 8px 16px;
+  border-radius: 4px;
+  cursor: pointer;
+}
+button:hover { background: var(--border); }
+button.primary { background: var(--accent); color: white; border: none; }
+button.primary:hover { opacity: 0.9; }
+button:disabled { opacity: 0.5; cursor: not-allowed; }
+
 #events-log {
-  max-height: 200px;
+  max-height: 400px;
   overflow-y: auto;
   font-family: monospace;
   font-size: 0.8rem;
@@ -110,5 +133,19 @@ th { color: var(--muted); font-weight: 500; }
   border-radius: 8px;
 }
 
-.event-line { padding: 2px 0; color: var(--muted); }
-.event-line .time { color: var(--accent); }
+.event-line { padding: 4px 0; color: var(--text); border-bottom: 1px solid rgba(255,255,255,0.05); }
+.event-line .time { color: var(--muted); margin-right: 8px; font-size: 0.75rem; }
+.event-line .step-badge {
+  background: var(--accent);
+  color: white;
+  padding: 1px 4px;
+  border-radius: 3px;
+  font-size: 0.7rem;
+  margin-right: 8px;
+  text-transform: uppercase;
+}
+.event-line .type-badge {
+  color: var(--warning);
+  font-weight: bold;
+  margin-right: 8px;
+}

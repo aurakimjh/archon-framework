@@ -10,6 +10,7 @@ from src.dashboard.models import (
     CostSummary,
     GateQueueItem,
     ProjectSummary,
+    TaskRequest,
 )
 from src.log import get_logger
 
@@ -36,6 +37,95 @@ class DashboardRoutes:
         self._token_budgets = token_budgets or {}
         self._metrics_collector = metrics_collector
         self._gate_queue: list[GateQueueItem] = gate_queue or []
+
+    # --- Tasks ---
+
+    async def run_task(
+        self, 
+        request: TaskRequest, 
+        on_step: callable | None = None
+    ) -> dict[str, Any]:
+        """새 작업을 실행한다."""
+        from src.orchestrator.handoff import HandoffArtifact, Envelope, ProjectContext, Task
+        from src.registry.models import ProjectRegistry, ProjectMeta, GitConfig
+
+        # Registry 로드 (실패 시 기본값 생성)
+        registry = None
+        if self._registry_store:
+            try:
+                registry = self._registry_store.load(request.project_id)
+            except Exception:
+                pass
+        
+        if registry is None:
+            registry = ProjectRegistry(
+                project_meta=ProjectMeta(
+                    project_id=request.project_id,
+                    project_name=request.project_id,
+                ),
+                git_config=GitConfig(repo_url="mem://mock"),
+            )
+
+        # 초기 핸드오프 생성
+        initial_handoff = HandoffArtifact(
+            envelope=Envelope(
+                handoff_id=f"hf_ui_{request.project_id}",
+                from_agent="user",
+                to_agent=request.agent_role,
+            ),
+            project_context=ProjectContext(
+                project_id=request.project_id,
+                project_name=getattr(registry.project_meta, "project_name", request.project_id),
+                git_repo=registry.git_config.repo_url,
+                git_branch=registry.git_config.main_branch,
+                base_commit_sha="0000000",
+            ),
+            task=Task(
+                task_id=f"task_{request.project_id}",
+                completed_summary="New task from UI",
+                next_instructions=request.instructions,
+            ),
+        )
+
+        import asyncio
+
+        async def run_and_queue():
+            if request.mock:
+                from src.pipeline.demo_pipeline import DemoPipeline
+                pipeline = DemoPipeline(
+                    registry=registry,
+                    mock=True,
+                    scenario=request.scenario,
+                    on_step=on_step,
+                )
+                result = await pipeline.run(initial_handoff)
+                gate = result.gate
+                final_handoff = result.handoff
+            else:
+                from src.orchestrator.orchestrator import Orchestrator
+                orchestrator = Orchestrator()
+                final_handoff = await orchestrator.process_handoff(initial_handoff, registry, on_step=on_step)
+                gate = final_handoff.quality_gates.gate_decision
+
+            # Human Gate 대상이면 Queue에 추가
+            if gate in ["L2_HUMAN", "L3_HALT", "L4_DEPLOY"]:
+                from src.dashboard.models import GateQueueItem
+                self.add_gate_item(GateQueueItem(
+                    handoff_id=final_handoff.envelope.handoff_id,
+                    project_id=request.project_id,
+                    gate_level=str(gate),
+                    trigger_reason=final_handoff.human_gate_package.trigger_reason if final_handoff.human_gate_package else "N/A",
+                    agent_role=final_handoff.envelope.from_agent,
+                    review_score=final_handoff.quality_gates.review_score,
+                ))
+
+        asyncio.create_task(run_and_queue())
+
+        return {
+            "status": "started",
+            "project_id": request.project_id,
+            "task_id": initial_handoff.task.task_id,
+        }
 
     # --- Projects ---
 
