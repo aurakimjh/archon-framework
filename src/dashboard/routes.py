@@ -14,12 +14,14 @@ from src.dashboard.models import (
     ProjectSummary,
     TaskRequest,
 )
+from src.dashboard.notifications import fire_and_forget
 from src.dashboard.persistence import (
     BudgetStatus,
     BudgetThreshold,
     DashboardStore,
     GateRecord,
     GateStatus,
+    NotificationEvent,
     TaskRecord,
     TaskStatus,
     TimeseriesPoint,
@@ -60,6 +62,8 @@ class DashboardRoutes:
         self._store = store
         self._on_event = on_event
         self._running_tasks: dict[str, asyncio.Task[Any]] = {}
+        # 예산 초과 알림 중복 방지 — (threshold_id, period_key) 키.
+        self._notified_budgets: set[tuple[int, str]] = set()
 
     # ---------------- Tasks ----------------
 
@@ -317,6 +321,76 @@ class DashboardRoutes:
         except Exception:
             return None
 
+    async def project_timeline(
+        self, project_id: str, *, limit: int = 50
+    ) -> list[dict[str, Any]]:
+        """tasks + gates를 시간순으로 결합한 프로젝트 타임라인."""
+        if not self._store:
+            return []
+
+        items: list[dict[str, Any]] = []
+        for t in self._store.tasks.list(project_id=project_id, limit=limit):
+            items.append(
+                {
+                    "kind": "task",
+                    "timestamp": t.created_at,
+                    "id": t.id,
+                    "status": t.status.value,
+                    "agent_role": t.agent_role,
+                    "instructions": t.instructions[:200],
+                    "gate_decision": t.gate_decision,
+                    "review_score": t.review_score,
+                    "started_at": t.started_at,
+                    "completed_at": t.completed_at,
+                }
+            )
+        for g in self._store.gates.list(status=None, project_id=project_id, limit=limit):
+            items.append(
+                {
+                    "kind": "gate",
+                    "timestamp": g.created_at,
+                    "id": g.handoff_id,
+                    "status": g.status.value,
+                    "agent_role": g.agent_role,
+                    "gate_level": g.gate_level,
+                    "review_score": g.review_score,
+                    "decided_at": g.decided_at,
+                    "decided_by": g.decided_by,
+                }
+            )
+        items.sort(key=lambda x: x["timestamp"], reverse=True)
+        return items[:limit]
+
+    async def project_memory_search(
+        self, project_id: str, *, q: str, limit: int = 20
+    ) -> dict[str, Any]:
+        """선택적 — 메모리 모듈이 가용하면 검색하고, 아니면 빈 결과 반환."""
+        try:
+            from src.memory.mem0_store import Mem0Store  # type: ignore[import-not-found]
+        except Exception:
+            return {"available": False, "results": []}
+
+        try:
+            store = Mem0Store(user_id=project_id)
+            results = store.search(query=q, limit=limit) or []
+        except Exception as exc:  # noqa: BLE001
+            return {"available": False, "error": str(exc)[:200], "results": []}
+
+        # mem0 결과 형태가 다양하므로 일관된 dict로 변환.
+        normalized: list[dict[str, Any]] = []
+        for r in results:
+            if isinstance(r, dict):
+                normalized.append(
+                    {
+                        "memory": str(r.get("memory") or r.get("text") or ""),
+                        "score": float(r.get("score") or 0.0),
+                        "metadata": r.get("metadata") or {},
+                    }
+                )
+            else:
+                normalized.append({"memory": str(r), "score": 0.0, "metadata": {}})
+        return {"available": True, "results": normalized}
+
     # ---------------- Agents ----------------
 
     async def list_agents(self) -> list[AgentStatusResponse]:
@@ -480,7 +554,7 @@ class DashboardRoutes:
             if cost_usd is not None
             else calc_cost(model, tokens_in, tokens_out)
         )
-        return self._store.usage.record_event(
+        event = self._store.usage.record_event(
             timestamp=timestamp,
             project_id=project_id,
             agent_role=agent_role,
@@ -491,6 +565,40 @@ class DashboardRoutes:
             task_id=task_id,
             metadata=metadata,
         )
+        await self._check_budget_alerts()
+        return event
+
+    async def _check_budget_alerts(self) -> None:
+        """현재 예산 상태를 점검하여 처음 exceeded 진입한 임계치에 알림 발송."""
+        if not self._store:
+            return
+        from datetime import UTC, datetime as _dt
+
+        statuses = self._store.budgets.status()
+        now = _dt.now(UTC)
+        for s in statuses:
+            if not s.exceeded or s.threshold.id is None:
+                continue
+            period_key = (
+                now.strftime("%Y-%m-%d")
+                if s.threshold.period.value == "daily"
+                else now.strftime("%Y-%m")
+            )
+            key = (s.threshold.id, period_key)
+            if key in self._notified_budgets:
+                continue
+            self._notified_budgets.add(key)
+            fire_and_forget(
+                event=NotificationEvent.BUDGET_EXCEEDED,
+                payload={
+                    "scope": s.threshold.scope,
+                    "period": s.threshold.period.value,
+                    "limit_usd": s.threshold.limit_usd,
+                    "used_usd": round(s.used_usd, 2),
+                    "ratio": round(s.usage_ratio, 3),
+                },
+                store=self._store.notifications,
+            )
 
     async def query_timeseries(
         self,
@@ -615,6 +723,18 @@ class DashboardRoutes:
                 agent_role=agent_role,
                 review_score=review_score,
                 payload=payload or {},
+            )
+            fire_and_forget(
+                event=NotificationEvent.GATE_ENQUEUED,
+                payload={
+                    "handoff_id": handoff_id,
+                    "project_id": project_id,
+                    "gate_level": gate_level,
+                    "agent_role": agent_role,
+                    "review_score": review_score,
+                    "trigger_reason": trigger_reason,
+                },
+                store=self._store.notifications,
             )
             return
         self._gate_queue.append(

@@ -23,7 +23,7 @@ from pydantic import BaseModel, Field
 logger = logging.getLogger(__name__)
 
 _DEFAULT_DB_PATH = ".harness/dashboard.db"
-SCHEMA_VERSION = 2
+SCHEMA_VERSION = 3
 
 
 def get_db_path() -> Path:
@@ -157,6 +157,43 @@ class BudgetStatus(BaseModel):
     exceeded: bool
 
 
+class AuditEvent(BaseModel):
+    """감사 로그 엔트리 — 누가, 언제, 무엇을, 어디에."""
+
+    id: int | None = None
+    timestamp: str
+    user_id: str | None = None
+    user_role: str | None = None
+    action: str                          # 예: "gate.approve", "task.cancel", "budget.upsert"
+    target: str | None = None            # 대상 ID(예: handoff_id, task_id, scope:period)
+    detail: dict[str, Any] = Field(default_factory=dict)
+    result: str = "success"              # "success" | "error" | "denied"
+
+
+class NotificationEvent(StrEnum):
+    BUDGET_EXCEEDED = "budget.exceeded"
+    GATE_ENQUEUED = "gate.enqueued"
+
+
+class NotificationChannel(StrEnum):
+    WEBHOOK = "webhook"          # 일반 JSON POST
+    SLACK = "slack"              # Slack incoming webhook 형식
+    EMAIL = "email"              # SMTP (서버 설정 필요 — 미설정 시 noop)
+
+
+class NotificationRule(BaseModel):
+    """알림 규칙 — event 발생 시 channel 으로 target 전송."""
+
+    id: int | None = None
+    event: NotificationEvent
+    channel: NotificationChannel
+    target: str                          # webhook URL 또는 email 주소
+    enabled: bool = True
+    label: str = ""
+    created_at: str | None = None
+    updated_at: str | None = None
+
+
 # ---------------------------------------------------------------------------
 # Connection / 마이그레이션
 # ---------------------------------------------------------------------------
@@ -229,6 +266,30 @@ class _Connection:
             updated_at TEXT NOT NULL,
             UNIQUE(scope, period)
         )""",
+        """CREATE TABLE IF NOT EXISTS audit_events (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            timestamp TEXT NOT NULL,
+            user_id TEXT,
+            user_role TEXT,
+            action TEXT NOT NULL,
+            target TEXT,
+            detail_json TEXT NOT NULL DEFAULT '{}',
+            result TEXT NOT NULL DEFAULT 'success'
+        )""",
+        "CREATE INDEX IF NOT EXISTS idx_audit_ts ON audit_events(timestamp DESC)",
+        "CREATE INDEX IF NOT EXISTS idx_audit_user ON audit_events(user_id)",
+        "CREATE INDEX IF NOT EXISTS idx_audit_action ON audit_events(action)",
+        """CREATE TABLE IF NOT EXISTS notification_rules (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            event TEXT NOT NULL,
+            channel TEXT NOT NULL,
+            target TEXT NOT NULL,
+            enabled INTEGER NOT NULL DEFAULT 1,
+            label TEXT NOT NULL DEFAULT '',
+            created_at TEXT NOT NULL,
+            updated_at TEXT NOT NULL
+        )""",
+        "CREATE INDEX IF NOT EXISTS idx_notif_event ON notification_rules(event)",
     ]
 
     def __init__(self, path: Path) -> None:
@@ -883,8 +944,211 @@ def _row_to_budget(row: sqlite3.Row) -> BudgetThreshold:
     )
 
 
+class AuditStore:
+    """감사 로그 — 누가/언제/무엇을 했는가."""
+
+    def __init__(self, conn: _Connection) -> None:
+        self._c = conn
+
+    def emit(
+        self,
+        *,
+        action: str,
+        user_id: str | None = None,
+        user_role: str | None = None,
+        target: str | None = None,
+        detail: dict[str, Any] | None = None,
+        result: str = "success",
+    ) -> AuditEvent:
+        ts = _now_iso()
+        with self._c.tx() as cur:
+            cur.execute(
+                """INSERT INTO audit_events
+                (timestamp, user_id, user_role, action, target, detail_json, result)
+                VALUES (?, ?, ?, ?, ?, ?, ?)""",
+                (
+                    ts,
+                    user_id,
+                    user_role,
+                    action,
+                    target,
+                    json.dumps(detail or {}, ensure_ascii=False),
+                    result,
+                ),
+            )
+            event_id = cur.lastrowid
+        return AuditEvent(
+            id=event_id,
+            timestamp=ts,
+            user_id=user_id,
+            user_role=user_role,
+            action=action,
+            target=target,
+            detail=detail or {},
+            result=result,
+        )
+
+    def list(
+        self,
+        *,
+        user_id: str | None = None,
+        action: str | None = None,
+        target: str | None = None,
+        since: str | None = None,
+        until: str | None = None,
+        q: str | None = None,
+        limit: int = 200,
+    ) -> list[AuditEvent]:
+        where: list[str] = []
+        params: list[Any] = []
+        if user_id:
+            where.append("user_id = ?")
+            params.append(user_id)
+        if action:
+            where.append("action = ?")
+            params.append(action)
+        if target:
+            where.append("target = ?")
+            params.append(target)
+        if since:
+            where.append("timestamp >= ?")
+            params.append(since)
+        if until:
+            where.append("timestamp < ?")
+            params.append(until)
+        if q:
+            where.append(
+                "(action LIKE ? OR target LIKE ? OR detail_json LIKE ?)"
+            )
+            like = f"%{q}%"
+            params.extend([like, like, like])
+        clause = f" WHERE {' AND '.join(where)}" if where else ""
+        rows = self._c.query(
+            f"SELECT * FROM audit_events{clause} "
+            "ORDER BY timestamp DESC LIMIT ?",
+            (*params, max(1, min(limit, 1000))),
+        )
+        return [_row_to_audit(r) for r in rows]
+
+
+def _row_to_audit(row: sqlite3.Row) -> AuditEvent:
+    return AuditEvent(
+        id=int(row["id"]),
+        timestamp=row["timestamp"],
+        user_id=row["user_id"],
+        user_role=row["user_role"],
+        action=row["action"],
+        target=row["target"],
+        detail=json.loads(row["detail_json"] or "{}"),
+        result=row["result"],
+    )
+
+
+class NotificationRuleStore:
+    """알림 규칙 CRUD."""
+
+    def __init__(self, conn: _Connection) -> None:
+        self._c = conn
+
+    def list(
+        self,
+        *,
+        event: NotificationEvent | str | None = None,
+        enabled_only: bool = False,
+    ) -> list[NotificationRule]:
+        where: list[str] = []
+        params: list[Any] = []
+        if event is not None:
+            where.append("event = ?")
+            params.append(
+                event.value if isinstance(event, NotificationEvent) else event
+            )
+        if enabled_only:
+            where.append("enabled = 1")
+        clause = f" WHERE {' AND '.join(where)}" if where else ""
+        rows = self._c.query(
+            f"SELECT * FROM notification_rules{clause} ORDER BY id ASC",
+            tuple(params),
+        )
+        return [_row_to_rule(r) for r in rows]
+
+    def upsert(self, rule: NotificationRule) -> NotificationRule:
+        now = _now_iso()
+        with self._c.tx() as cur:
+            if rule.id is not None:
+                cur.execute(
+                    """UPDATE notification_rules
+                    SET event = ?, channel = ?, target = ?, enabled = ?, label = ?, updated_at = ?
+                    WHERE id = ?""",
+                    (
+                        rule.event.value,
+                        rule.channel.value,
+                        rule.target,
+                        1 if rule.enabled else 0,
+                        rule.label,
+                        now,
+                        rule.id,
+                    ),
+                )
+                if cur.rowcount == 0:
+                    return rule  # 존재하지 않음 — 호출자가 처리
+                rid = rule.id
+                created = self._c.query_one(
+                    "SELECT created_at FROM notification_rules WHERE id = ?",
+                    (rid,),
+                )
+                created_at = created["created_at"] if created else now
+            else:
+                cur.execute(
+                    """INSERT INTO notification_rules
+                    (event, channel, target, enabled, label, created_at, updated_at)
+                    VALUES (?, ?, ?, ?, ?, ?, ?)""",
+                    (
+                        rule.event.value,
+                        rule.channel.value,
+                        rule.target,
+                        1 if rule.enabled else 0,
+                        rule.label,
+                        now,
+                        now,
+                    ),
+                )
+                rid = int(cur.lastrowid or 0)
+                created_at = now
+        return NotificationRule(
+            id=rid,
+            event=rule.event,
+            channel=rule.channel,
+            target=rule.target,
+            enabled=rule.enabled,
+            label=rule.label,
+            created_at=created_at,
+            updated_at=now,
+        )
+
+    def delete(self, rule_id: int) -> bool:
+        with self._c.tx() as cur:
+            cur.execute(
+                "DELETE FROM notification_rules WHERE id = ?", (rule_id,)
+            )
+            return cur.rowcount > 0
+
+
+def _row_to_rule(row: sqlite3.Row) -> NotificationRule:
+    return NotificationRule(
+        id=int(row["id"]),
+        event=NotificationEvent(row["event"]),
+        channel=NotificationChannel(row["channel"]),
+        target=row["target"],
+        enabled=bool(row["enabled"]),
+        label=row["label"] or "",
+        created_at=row["created_at"],
+        updated_at=row["updated_at"],
+    )
+
+
 class DashboardStore:
-    """tasks + gates + usage + budgets 의 facade."""
+    """tasks + gates + usage + budgets + audit + notification_rules 의 facade."""
 
     def __init__(self, path: str | Path | None = None) -> None:
         self._conn = _Connection(Path(path) if path else get_db_path())
@@ -892,6 +1156,8 @@ class DashboardStore:
         self.gates = GateStore(self._conn)
         self.usage = UsageStore(self._conn)
         self.budgets = BudgetStore(self._conn, self.usage)
+        self.audit = AuditStore(self._conn)
+        self.notifications = NotificationRuleStore(self._conn)
 
     def close(self) -> None:
         self._conn.close()

@@ -154,6 +154,76 @@ export interface UsageQueryParams {
   project_id?: string;
 }
 
+export type UserRole = "admin" | "operator" | "viewer";
+
+export interface CurrentUser {
+  user_id: string;
+  name: string;
+  role: UserRole;
+  configured: boolean;
+}
+
+export interface UserTokenSummary {
+  id: string;
+  label: string;
+  created_at: string;
+  last_used_at: string | null;
+}
+
+export interface UserSummary {
+  user_id: string;
+  name: string;
+  role: UserRole;
+  tokens: UserTokenSummary[];
+}
+
+export interface AuditEvent {
+  id: number;
+  timestamp: string;
+  user_id: string | null;
+  user_role: string | null;
+  action: string;
+  target: string | null;
+  detail: Record<string, unknown>;
+  result: string;
+}
+
+export interface TimelineItem {
+  kind: "task" | "gate";
+  timestamp: string;
+  id: string;
+  status: string;
+  agent_role: string;
+  instructions?: string;
+  gate_decision?: string | null;
+  review_score?: number | null;
+  started_at?: string | null;
+  completed_at?: string | null;
+  gate_level?: string;
+  decided_at?: string | null;
+  decided_by?: string | null;
+}
+
+export interface MemorySearchResult {
+  available: boolean;
+  error?: string;
+  results: { memory: string; score: number; metadata: Record<string, unknown> }[];
+}
+
+export type NotificationEventType = "budget.exceeded" | "gate.enqueued";
+export type NotificationChannelType = "webhook" | "slack" | "email";
+
+export interface NotificationRule {
+  id: number | null;
+  event: NotificationEventType;
+  channel: NotificationChannelType;
+  target: string;
+  enabled: boolean;
+  label: string;
+  created_at: string | null;
+  updated_at: string | null;
+}
+
 export interface ProjectSummary {
   project_id: string;
   project_name: string;

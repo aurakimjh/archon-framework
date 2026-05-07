@@ -38,8 +38,9 @@ npm run dev
 | `ARCHON_ENV` | `production` | `dev`/`development`/`local` 이면 mock·시나리오 허용. |
 | `ARCHON_AGENT_CONFIG_PATH` | `config/agent_config.yaml` | 역할별 에이전트 설정 YAML 경로. |
 | `ARCHON_LITELLM_CONFIG_PATH` | `config/litellm_config.yaml` | 모델 레지스트리 YAML 경로. |
-| `ARCHON_DASHBOARD_DB_PATH` | `.harness/dashboard.db` | Task/Gate/Usage 영속화 SQLite 경로. `:memory:` 가능. |
+| `ARCHON_DASHBOARD_DB_PATH` | `.harness/dashboard.db` | Task/Gate/Usage/Audit 영속화 SQLite 경로. `:memory:` 가능. |
 | `ARCHON_PRICING_PATH` | `config/model_pricing.json` | 모델별 단가(USD/1K tokens) 경로. |
+| `ARCHON_USERS_PATH` | `config/users.yaml` | 사용자/역할/토큰 디렉토리. 파일이 있으면 multi-user RBAC 모드로 동작. |
 
 ## 디렉토리
 
@@ -73,14 +74,18 @@ web/
 | `/instructions` | 작업지시서 등록·실행·취소 | Slice 3 ✅ |
 | `/gates` | Human Gate 상세·코멘트 결정 | Slice 3 ✅ |
 | `/cost` | 시계열 비용·토큰·예산 임계치 | Slice 4 ✅ |
-| `/projects` | 프로젝트 상세 | 미정 |
-| `/settings` | 토큰·CSP·웹훅 설정 | 미정 |
+| `/projects` | 프로젝트 목록 | Slice 6 ✅ |
+| `/projects/:id` | 프로젝트 타임라인 + 메모리 검색 | Slice 6 ✅ |
+| `/settings` | 사용자/토큰·감사 로그·알림 규칙 | Slice 5+7 ✅ |
 
-## 다음 슬라이스 후보
+## RBAC 운영 가이드
 
-- **Slice 5 — Settings & RBAC**
-  - 토큰 회전 UI, 사용자/role 모델, 감사 로그 영속·검색
-- **Slice 6 — Project Detail**
-  - 프로젝트별 핸드오프 타임라인, 메모리 검색, 실행 히스토리
-- **Slice 7 — Notifications & Webhooks**
-  - 예산 초과·Gate enqueue 시 Slack/Email/Webhook 알림
+`config/users.yaml`이 존재하면 **multi-user RBAC 모드**가 자동 활성화됩니다.
+
+- **admin** : 사용자 관리, 토큰 발급/취소, 예산·에이전트 설정·알림 규칙 변경, 감사 로그 열람
+- **operator** : 작업 등록·취소, Human Gate 결정
+- **viewer** : 읽기 전용
+
+토큰은 `/settings` → "Issue token"으로 발급하며 평문은 1회만 노출됩니다(이후 해시만 저장).
+
+`users.yaml`이 없으면 `ARCHON_DASHBOARD_TOKEN` 단일 토큰 모드(=admin), 그것도 없으면 인증 비활성(개발/내부망).

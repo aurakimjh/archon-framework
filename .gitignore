@@ -7,6 +7,7 @@ gemini.md
 config/litellm_config.yaml
 config/ray_config.yaml
 config/agent_config.yaml
+config/users.yaml
 
 # 실제 운영 SOP (Private 레포에서 관리)
 .harness/sop/production/

@@ -9,22 +9,29 @@ import type {
   AgentRoleConfig,
   AgentRoleConfigSet,
   AgentStatusResponse,
+  AuditEvent,
   BudgetStatus,
   BudgetThreshold,
   CostSummary,
   CreateTaskRequest,
   CreateTaskResponse,
+  CurrentUser,
   DashboardEvent,
   GateDecisionBody,
   GateQueueItem,
   GateRecord,
+  MemorySearchResult,
   ModelEntry,
+  NotificationRule,
   PipelineMetrics,
   ProjectSummary,
   TaskRecord,
+  TimelineItem,
   TimeseriesPoint,
   UsageQueryParams,
   UsageSummary,
+  UserRole,
+  UserSummary,
 } from "@/types";
 import { wsClient, type ConnectionStatus } from "@/lib/ws";
 
@@ -253,6 +260,152 @@ export function useSeedUsage() {
       qc.invalidateQueries({ queryKey: ["usage-summary"] });
       qc.invalidateQueries({ queryKey: ["usage-timeseries"] });
     },
+  });
+}
+
+// --- Slice 5: 사용자 / 감사 로그 ---
+
+export function useMe() {
+  return useQuery({
+    queryKey: ["me"],
+    queryFn: () => api.get<CurrentUser>("/api/me"),
+    staleTime: 60_000,
+    retry: false,
+  });
+}
+
+export function useUsers() {
+  return useQuery({
+    queryKey: ["users"],
+    queryFn: () => api.get<UserSummary[]>("/api/users"),
+    retry: (n, e: unknown) =>
+      typeof e === "object" &&
+      e !== null &&
+      "status" in e &&
+      (e as { status?: number }).status === 403
+        ? false
+        : n < 1,
+  });
+}
+
+export function useUpsertUser() {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: (input: { user_id: string; name?: string; role: UserRole }) =>
+      api.put<{ user_id: string; name: string; role: UserRole }>(
+        "/api/users",
+        input,
+      ),
+    onSuccess: () => qc.invalidateQueries({ queryKey: ["users"] }),
+  });
+}
+
+export function useDeleteUser() {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: (user_id: string) => api.del(`/api/users/${user_id}`),
+    onSuccess: () => qc.invalidateQueries({ queryKey: ["users"] }),
+  });
+}
+
+export function useIssueToken() {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: (input: { user_id: string; label?: string }) =>
+      api.post<{ token: string; label: string }>(
+        `/api/users/${input.user_id}/tokens`,
+        { label: input.label ?? "" },
+      ),
+    onSuccess: () => qc.invalidateQueries({ queryKey: ["users"] }),
+  });
+}
+
+export function useRevokeToken() {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: (input: { user_id: string; token_id: string }) =>
+      api.del(`/api/users/${input.user_id}/tokens/${input.token_id}`),
+    onSuccess: () => qc.invalidateQueries({ queryKey: ["users"] }),
+  });
+}
+
+export function useAudit(filter?: {
+  user_id?: string;
+  action?: string;
+  q?: string;
+  limit?: number;
+}) {
+  const qs = new URLSearchParams();
+  if (filter?.user_id) qs.set("user_id", filter.user_id);
+  if (filter?.action) qs.set("action", filter.action);
+  if (filter?.q) qs.set("q", filter.q);
+  if (filter?.limit) qs.set("limit", String(filter.limit));
+  const q = qs.toString();
+  return useQuery({
+    queryKey: ["audit", filter],
+    queryFn: () => api.get<AuditEvent[]>(q ? `/api/audit?${q}` : "/api/audit"),
+    retry: false,
+  });
+}
+
+// --- Slice 6: project detail ---
+
+export function useProjectTimeline(projectId: string | null, limit = 50) {
+  return useQuery({
+    queryKey: ["project-timeline", projectId, limit],
+    queryFn: () =>
+      api.get<TimelineItem[]>(
+        `/api/projects/${projectId}/timeline?limit=${limit}`,
+      ),
+    enabled: !!projectId,
+    refetchInterval: 10_000,
+  });
+}
+
+export function useProjectMemory(projectId: string | null, q: string | null) {
+  return useQuery({
+    queryKey: ["project-memory", projectId, q],
+    queryFn: () =>
+      api.get<MemorySearchResult>(
+        `/api/projects/${projectId}/memory?q=${encodeURIComponent(q ?? "")}`,
+      ),
+    enabled: !!projectId && !!q && q.length > 0,
+  });
+}
+
+// --- Slice 7: notification rules ---
+
+export function useNotificationRules() {
+  return useQuery({
+    queryKey: ["notification-rules"],
+    queryFn: () => api.get<NotificationRule[]>("/api/notification-rules"),
+    retry: false,
+  });
+}
+
+export function useUpsertNotificationRule() {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: (rule: Omit<NotificationRule, "created_at" | "updated_at">) =>
+      api.put<NotificationRule>("/api/notification-rules", rule),
+    onSuccess: () =>
+      qc.invalidateQueries({ queryKey: ["notification-rules"] }),
+  });
+}
+
+export function useDeleteNotificationRule() {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: (id: number) => api.del(`/api/notification-rules/${id}`),
+    onSuccess: () =>
+      qc.invalidateQueries({ queryKey: ["notification-rules"] }),
+  });
+}
+
+export function useTestNotification() {
+  return useMutation({
+    mutationFn: (rule_id: number) =>
+      api.post<{ status: string }>("/api/notifications/test", { rule_id }),
   });
 }
 

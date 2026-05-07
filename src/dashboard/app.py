@@ -13,12 +13,24 @@ from src.dashboard.agent_config import AgentConfigStore, AgentRoleConfig
 from src.dashboard.auth import extract_bearer_token, extract_ws_token, get_dashboard_token, verify_token
 from src.dashboard.model_registry import is_known_model, load_models
 from src.dashboard.models import TaskRequest
+from src.dashboard.notifications import notify
 from src.dashboard.persistence import (
     BudgetPeriod,
     BudgetThreshold,
     DashboardStore,
+    NotificationChannel,
+    NotificationEvent,
+    NotificationRule,
 )
 from src.dashboard.routes import DashboardRoutes
+from src.dashboard.users import (
+    Role,
+    User,
+    UserStore,
+    auth_required,
+    authenticate,
+    role_meets,
+)
 from src.dashboard.websocket import WebSocketManager
 from src.log import get_logger
 from src.registry.models import AgentRole
@@ -39,6 +51,29 @@ class BudgetUpsertBody(BaseModel):
     limit_usd: float
     notify_email: str | None = None
     notify_webhook: str | None = None
+
+
+class UserUpsertBody(BaseModel):
+    user_id: str
+    name: str = ""
+    role: Role = Role.VIEWER
+
+
+class TokenIssueBody(BaseModel):
+    label: str = ""
+
+
+class NotificationRuleUpsertBody(BaseModel):
+    id: int | None = None
+    event: NotificationEvent
+    channel: NotificationChannel
+    target: str
+    enabled: bool = True
+    label: str = ""
+
+
+class NotificationTestBody(BaseModel):
+    rule_id: int
 
 logger = logging.getLogger(__name__)
 _slog = get_logger(__name__)
@@ -178,20 +213,63 @@ class DashboardApp:
         routes = self._routes
         ws_manager = self._ws_manager
 
-        # --- 인증 의존성 ---
+        # --- 인증·인가 의존성 (Slice 5 RBAC) ---
+        user_store = UserStore()
 
-        async def require_auth(authorization: str | None = Header(None)) -> None:
-            """REST API Bearer 토큰 인증. 토큰 미설정 시 통과."""
-            token = get_dashboard_token()
-            if token is None:
-                return
-            provided = extract_bearer_token(authorization)
-            if not verify_token(provided, token):
+        async def _resolve_user(authorization: str | None) -> User | None:
+            token = extract_bearer_token(authorization)
+            return authenticate(token, store=user_store)
+
+        async def require_auth(authorization: str | None = Header(None)) -> User:
+            """기본 인증(viewer 이상)."""
+            user = await _resolve_user(authorization)
+            if user is None:
                 raise HTTPException(
                     status_code=401,
                     detail="Invalid or missing authentication token",
                     headers={"WWW-Authenticate": "Bearer"},
                 )
+            return user
+
+        def require_role(min_role: Role):
+            async def dep(authorization: str | None = Header(None)) -> User:
+                user = await _resolve_user(authorization)
+                if user is None:
+                    raise HTTPException(
+                        status_code=401,
+                        detail="Authentication required",
+                        headers={"WWW-Authenticate": "Bearer"},
+                    )
+                if not role_meets(user.role, min_role):
+                    raise HTTPException(
+                        status_code=403,
+                        detail=f"role '{min_role.value}' or higher required",
+                    )
+                return user
+
+            return dep
+
+        require_admin = require_role(Role.ADMIN)
+        require_operator = require_role(Role.OPERATOR)
+
+        def audit_emit(
+            user: User | None,
+            action: str,
+            *,
+            target: str | None = None,
+            detail: dict[str, Any] | None = None,
+            result: str = "success",
+        ) -> None:
+            if self._store is None:
+                return
+            self._store.audit.emit(
+                action=action,
+                user_id=user.user_id if user else None,
+                user_role=user.role.value if user else None,
+                target=target,
+                detail=detail or {},
+                result=result,
+            )
 
         # --- REST endpoints ---
         @app.get("/api/projects", dependencies=[Depends(require_auth)])
@@ -206,8 +284,11 @@ class DashboardApp:
                 return JSONResponse({"error": "not found"}, status_code=404)
             return data.model_dump()
 
-        @app.post("/api/tasks", dependencies=[Depends(require_auth)])
-        async def run_task(request: TaskRequest):
+        @app.post("/api/tasks")
+        async def run_task(
+            request: TaskRequest,
+            user: User = Depends(require_operator),
+        ):
             # mock 모드와 비-default 시나리오는 dev 환경에서만 허용한다.
             if not _is_dev() and (request.mock or request.scenario != "auto_pass"):
                 raise HTTPException(
@@ -225,6 +306,15 @@ class DashboardApp:
                 }))
 
             result = await routes.run_task(request, on_step=on_step)
+            audit_emit(
+                user,
+                "task.create",
+                target=result.get("task_id"),
+                detail={
+                    "project_id": request.project_id,
+                    "agent_role": request.agent_role,
+                },
+            )
             return result
 
         @app.get("/api/tasks", dependencies=[Depends(require_auth)])
@@ -249,13 +339,15 @@ class DashboardApp:
                 raise HTTPException(status_code=404, detail="task not found")
             return record.model_dump(mode="json")
 
-        @app.post(
-            "/api/tasks/{task_id}/cancel", dependencies=[Depends(require_auth)]
-        )
-        async def cancel_task(task_id: str):
+        @app.post("/api/tasks/{task_id}/cancel")
+        async def cancel_task(
+            task_id: str,
+            user: User = Depends(require_operator),
+        ):
             result = await routes.cancel_task(task_id)
             if result.get("status") == "not_found":
                 raise HTTPException(status_code=404, detail="task not found")
+            audit_emit(user, "task.cancel", target=task_id)
             return result
 
         @app.get("/api/agents", dependencies=[Depends(require_auth)])
@@ -278,8 +370,12 @@ class DashboardApp:
             cfg = agent_config_store.load()
             return cfg.model_dump(mode="json")
 
-        @app.put("/api/agent-config/{role}", dependencies=[Depends(require_auth)])
-        async def update_agent_config(role: str, body: AgentRoleConfig):
+        @app.put("/api/agent-config/{role}")
+        async def update_agent_config(
+            role: str,
+            body: AgentRoleConfig,
+            user: User = Depends(require_admin),
+        ):
             try:
                 role_enum = AgentRole(role)
             except ValueError as exc:
@@ -309,6 +405,7 @@ class DashboardApp:
             updated = agent_config_store.update_role(role_enum, body)
             payload = updated.get(role_enum).model_dump(mode="json")
             await ws_manager.broadcast_dict("agent_config_updated", payload)
+            audit_emit(user, "agent_config.update", target=role)
             return payload
 
         @app.get("/api/models", dependencies=[Depends(require_auth)])
@@ -340,12 +437,11 @@ class DashboardApp:
             )
             return [p.model_dump(mode="json") for p in data]
 
-        @app.post(
-            "/api/usage/seed", dependencies=[Depends(require_auth)]
-        )
+        @app.post("/api/usage/seed")
         async def usage_seed(
             days: int = Query(14, ge=1, le=90),
             events_per_day: int = Query(24, ge=1, le=200),
+            user: User = Depends(require_admin),
         ):
             if not _is_dev():
                 raise HTTPException(
@@ -354,6 +450,11 @@ class DashboardApp:
                 )
             count = await routes.seed_usage(
                 days=days, events_per_day=events_per_day
+            )
+            audit_emit(
+                user,
+                "usage.seed",
+                detail={"days": days, "events_per_day": events_per_day, "events": count},
             )
             return {"status": "ok", "events": count}
 
@@ -367,8 +468,11 @@ class DashboardApp:
         async def budgets_status():
             return [s.model_dump(mode="json") for s in await routes.budget_status()]
 
-        @app.put("/api/budgets", dependencies=[Depends(require_auth)])
-        async def upsert_budget(body: BudgetUpsertBody):
+        @app.put("/api/budgets")
+        async def upsert_budget(
+            body: BudgetUpsertBody,
+            user: User = Depends(require_admin),
+        ):
             if body.limit_usd < 0:
                 raise HTTPException(
                     status_code=400, detail="limit_usd must be >= 0"
@@ -384,15 +488,23 @@ class DashboardApp:
             await ws_manager.broadcast_dict(
                 "budget_updated", saved.model_dump(mode="json")
             )
+            audit_emit(
+                user,
+                "budget.upsert",
+                target=f"{saved.scope}:{saved.period.value}",
+                detail={"limit_usd": saved.limit_usd},
+            )
             return saved.model_dump(mode="json")
 
-        @app.delete(
-            "/api/budgets/{threshold_id}", dependencies=[Depends(require_auth)]
-        )
-        async def delete_budget(threshold_id: int):
+        @app.delete("/api/budgets/{threshold_id}")
+        async def delete_budget(
+            threshold_id: int,
+            user: User = Depends(require_admin),
+        ):
             ok = await routes.delete_budget(threshold_id)
             if not ok:
                 raise HTTPException(status_code=404, detail="budget not found")
+            audit_emit(user, "budget.delete", target=str(threshold_id))
             return {"status": "deleted", "id": threshold_id}
 
         @app.get("/api/cost", dependencies=[Depends(require_auth)])
@@ -421,12 +533,14 @@ class DashboardApp:
                 raise HTTPException(status_code=404, detail="gate not found")
             return record.model_dump(mode="json")
 
-        @app.post("/api/gates/{handoff_id}/approve", dependencies=[Depends(require_auth)])
+        @app.post("/api/gates/{handoff_id}/approve")
         async def approve_gate(
-            handoff_id: str, body: GateDecisionBody | None = None
+            handoff_id: str,
+            body: GateDecisionBody | None = None,
+            user: User = Depends(require_operator),
         ):
             comment = body.comment if body else None
-            reviewer = body.reviewer if body else None
+            reviewer = (body.reviewer if body else None) or user.user_id
             try:
                 result = await routes.approve_gate(
                     handoff_id, comment=comment, reviewer=reviewer
@@ -436,28 +550,258 @@ class DashboardApp:
             if result.get("status") == "not_found":
                 raise HTTPException(status_code=404, detail="gate not found")
             await ws_manager.broadcast_dict("gate_approved", result)
+            audit_emit(
+                user,
+                "gate.approve",
+                target=handoff_id,
+                detail={"comment": comment},
+            )
             return result
 
-        @app.post("/api/gates/{handoff_id}/reject", dependencies=[Depends(require_auth)])
-        async def reject_gate(handoff_id: str, body: GateDecisionBody):
+        @app.post("/api/gates/{handoff_id}/reject")
+        async def reject_gate(
+            handoff_id: str,
+            body: GateDecisionBody,
+            user: User = Depends(require_operator),
+        ):
             if not body.comment or not body.comment.strip():
                 raise HTTPException(
                     status_code=400, detail="reject requires a non-empty comment"
                 )
             try:
                 result = await routes.reject_gate(
-                    handoff_id, comment=body.comment, reviewer=body.reviewer
+                    handoff_id,
+                    comment=body.comment,
+                    reviewer=body.reviewer or user.user_id,
                 )
             except ValueError as exc:
                 raise HTTPException(status_code=400, detail=str(exc)) from exc
             if result.get("status") == "not_found":
                 raise HTTPException(status_code=404, detail="gate not found")
             await ws_manager.broadcast_dict("gate_rejected", result)
+            audit_emit(
+                user,
+                "gate.reject",
+                target=handoff_id,
+                detail={"comment": body.comment},
+            )
             return result
 
         @app.get("/api/metrics", dependencies=[Depends(require_auth)])
         async def get_metrics():
             return await routes.get_metrics()
+
+        # --- Slice 5: /api/me, /api/users, /api/audit ---
+
+        @app.get("/api/me")
+        async def me(user: User = Depends(require_auth)):
+            return {
+                "user_id": user.user_id,
+                "name": user.name,
+                "role": user.role.value,
+                "configured": user_store.configured,
+            }
+
+        @app.get("/api/users")
+        async def list_users(_: User = Depends(require_admin)):
+            return [
+                {
+                    "user_id": u.user_id,
+                    "name": u.name,
+                    "role": u.role.value,
+                    "tokens": [
+                        {
+                            "id": t.id,
+                            "label": t.label,
+                            "created_at": t.created_at,
+                            "last_used_at": t.last_used_at,
+                        }
+                        for t in u.tokens
+                    ],
+                }
+                for u in user_store.list_users()
+            ]
+
+        @app.put("/api/users")
+        async def upsert_user(
+            body: UserUpsertBody, user: User = Depends(require_admin)
+        ):
+            saved = user_store.upsert(
+                User(user_id=body.user_id, name=body.name, role=body.role)
+            )
+            audit_emit(
+                user,
+                "user.upsert",
+                target=body.user_id,
+                detail={"role": body.role.value},
+            )
+            return {
+                "user_id": saved.user_id,
+                "name": saved.name,
+                "role": saved.role.value,
+            }
+
+        @app.delete("/api/users/{user_id}")
+        async def delete_user(
+            user_id: str, user: User = Depends(require_admin)
+        ):
+            ok = user_store.delete(user_id)
+            if not ok:
+                raise HTTPException(status_code=404, detail="user not found")
+            audit_emit(user, "user.delete", target=user_id)
+            return {"status": "deleted", "user_id": user_id}
+
+        @app.post("/api/users/{user_id}/tokens")
+        async def issue_user_token(
+            user_id: str,
+            body: TokenIssueBody,
+            user: User = Depends(require_admin),
+        ):
+            res = user_store.issue_token(user_id, label=body.label)
+            if res is None:
+                raise HTTPException(status_code=404, detail="user not found")
+            _, plaintext = res
+            audit_emit(
+                user, "user.token.issue", target=user_id, detail={"label": body.label}
+            )
+            # 평문은 1회만 노출.
+            return {"token": plaintext, "label": body.label}
+
+        @app.delete("/api/users/{user_id}/tokens/{token_id}")
+        async def revoke_user_token(
+            user_id: str,
+            token_id: str,
+            user: User = Depends(require_admin),
+        ):
+            ok = user_store.revoke_token(user_id, token_id)
+            if not ok:
+                raise HTTPException(status_code=404, detail="token not found")
+            audit_emit(user, "user.token.revoke", target=f"{user_id}:{token_id}")
+            return {"status": "revoked", "token_id": token_id}
+
+        @app.get("/api/audit")
+        async def list_audit(
+            user_id: str | None = Query(None),
+            action: str | None = Query(None),
+            target: str | None = Query(None),
+            since: str | None = Query(None),
+            until: str | None = Query(None),
+            q: str | None = Query(None),
+            limit: int = Query(200, ge=1, le=1000),
+            _: User = Depends(require_admin),
+        ):
+            if self._store is None:
+                return []
+            events = self._store.audit.list(
+                user_id=user_id,
+                action=action,
+                target=target,
+                since=since,
+                until=until,
+                q=q,
+                limit=limit,
+            )
+            return [e.model_dump(mode="json") for e in events]
+
+        # --- Slice 6: Project detail ---
+
+        @app.get(
+            "/api/projects/{project_id}/timeline",
+            dependencies=[Depends(require_auth)],
+        )
+        async def project_timeline(
+            project_id: str, limit: int = Query(50, ge=1, le=500)
+        ):
+            data = await routes.project_timeline(project_id, limit=limit)
+            return data
+
+        @app.get(
+            "/api/projects/{project_id}/memory",
+            dependencies=[Depends(require_auth)],
+        )
+        async def project_memory(
+            project_id: str,
+            q: str = Query(..., min_length=1, max_length=200),
+            limit: int = Query(20, ge=1, le=100),
+        ):
+            return await routes.project_memory_search(
+                project_id, q=q, limit=limit
+            )
+
+        # --- Slice 7: notification rules ---
+
+        @app.get(
+            "/api/notification-rules", dependencies=[Depends(require_admin)]
+        )
+        async def list_notification_rules():
+            if self._store is None:
+                return []
+            return [
+                r.model_dump(mode="json")
+                for r in self._store.notifications.list()
+            ]
+
+        @app.put("/api/notification-rules")
+        async def upsert_notification_rule(
+            body: NotificationRuleUpsertBody,
+            user: User = Depends(require_admin),
+        ):
+            if self._store is None:
+                raise HTTPException(status_code=500, detail="store not configured")
+            rule = NotificationRule(
+                id=body.id,
+                event=body.event,
+                channel=body.channel,
+                target=body.target,
+                enabled=body.enabled,
+                label=body.label,
+            )
+            saved = self._store.notifications.upsert(rule)
+            audit_emit(
+                user,
+                "notification.upsert",
+                target=str(saved.id),
+                detail={"event": saved.event.value, "channel": saved.channel.value},
+            )
+            return saved.model_dump(mode="json")
+
+        @app.delete("/api/notification-rules/{rule_id}")
+        async def delete_notification_rule(
+            rule_id: int, user: User = Depends(require_admin)
+        ):
+            if self._store is None or not self._store.notifications.delete(rule_id):
+                raise HTTPException(status_code=404, detail="rule not found")
+            audit_emit(user, "notification.delete", target=str(rule_id))
+            return {"status": "deleted", "id": rule_id}
+
+        @app.post("/api/notifications/test")
+        async def test_notification(
+            body: NotificationTestBody, user: User = Depends(require_admin)
+        ):
+            if self._store is None:
+                raise HTTPException(status_code=500, detail="store not configured")
+            rules = [
+                r for r in self._store.notifications.list() if r.id == body.rule_id
+            ]
+            if not rules:
+                raise HTTPException(status_code=404, detail="rule not found")
+            from src.dashboard.notifications import _dispatch_one
+
+            ok = await _dispatch_one(
+                rules[0],
+                {
+                    "test": True,
+                    "message": "Archon notification test",
+                    "user": user.user_id,
+                },
+            )
+            audit_emit(
+                user,
+                "notification.test",
+                target=str(body.rule_id),
+                result="success" if ok else "error",
+            )
+            return {"status": "sent" if ok else "failed"}
 
         # --- WebSocket (토큰 인증) ---
         @app.websocket("/ws")

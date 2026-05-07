@@ -8,7 +8,9 @@ import { GatesPage } from "@/pages/Gates";
 import { InstructionsPage } from "@/pages/Instructions";
 import { LoginPage } from "@/pages/Login";
 import { OverviewPage } from "@/pages/Overview";
-import { PlaceholderPage } from "@/pages/Placeholder";
+import { ProjectsPage } from "@/pages/Projects";
+import { ProjectDetailPage } from "@/pages/ProjectDetail";
+import { SettingsPage } from "@/pages/Settings";
 
 // recharts(약 400KB)는 /cost에서만 필요하므로 분리 로드.
 const CostPage = lazy(() =>
@@ -36,13 +38,12 @@ export function Router() {
       >
         <Route path="/" element={<Navigate to="/overview" replace />} />
         <Route path="/overview" element={<OverviewPage />} />
-        <Route
-          path="/projects"
-          element={<PlaceholderPage title="Projects" slice="Slice 3" />}
-        />
+        <Route path="/projects" element={<ProjectsPage />} />
+        <Route path="/projects/:id" element={<ProjectDetailPage />} />
         <Route path="/agents" element={<AgentsPage />} />
         <Route path="/instructions" element={<InstructionsPage />} />
         <Route path="/gates" element={<GatesPage />} />
+        <Route path="/settings" element={<SettingsPage />} />
         <Route
           path="/cost"
           element={
@@ -50,10 +51,6 @@ export function Router() {
               <CostPage />
             </Suspense>
           }
-        />
-        <Route
-          path="/settings"
-          element={<PlaceholderPage title="Settings" slice="Slice 2" />}
         />
       </Route>
       <Route path="*" element={<Navigate to="/overview" replace />} />

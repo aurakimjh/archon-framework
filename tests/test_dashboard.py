@@ -879,6 +879,239 @@ class TestBudgetEndpoints:
         assert budget_client.get("/api/budgets").json() == []
 
 
+class TestRBACAndAudit:
+    """multi-user 모드에서 RBAC 거부 + 감사 로그 emit 검증."""
+
+    @pytest.fixture
+    def rbac_setup(self, monkeypatch, tmp_path):
+        from fastapi.testclient import TestClient
+
+        from src.dashboard.app import DashboardApp
+        from src.dashboard.users import Role, User, UserStore
+
+        users_path = tmp_path / "users.yaml"
+        store = UserStore(users_path)
+        store.upsert(User(user_id="alice", role=Role.ADMIN))
+        store.upsert(User(user_id="bob", role=Role.OPERATOR))
+        store.upsert(User(user_id="carol", role=Role.VIEWER))
+        _, admin_token = store.issue_token("alice")  # type: ignore[misc]
+        _, op_token = store.issue_token("bob")  # type: ignore[misc]
+        _, view_token = store.issue_token("carol")  # type: ignore[misc]
+
+        monkeypatch.delenv("ARCHON_DASHBOARD_TOKEN", raising=False)
+        monkeypatch.setenv("ARCHON_USERS_PATH", str(users_path))
+        monkeypatch.setenv(
+            "ARCHON_DASHBOARD_DB_PATH", str(tmp_path / "dashboard.db")
+        )
+
+        client = TestClient(DashboardApp().create_app())
+        return client, {"admin": admin_token, "op": op_token, "view": view_token}
+
+    def _hdr(self, token: str) -> dict[str, str]:
+        return {"Authorization": f"Bearer {token}"}
+
+    def test_me_returns_user_role(self, rbac_setup):
+        client, tokens = rbac_setup
+        res = client.get("/api/me", headers=self._hdr(tokens["op"]))
+        assert res.status_code == 200
+        body = res.json()
+        assert body["user_id"] == "bob"
+        assert body["role"] == "operator"
+        assert body["configured"] is True
+
+    def test_no_token_unauthorized(self, rbac_setup):
+        client, _ = rbac_setup
+        assert client.get("/api/me").status_code == 401
+        assert client.get("/api/projects").status_code == 401
+
+    def test_viewer_cannot_mutate(self, rbac_setup):
+        client, tokens = rbac_setup
+        # viewer는 task 생성 불가
+        res = client.post(
+            "/api/tasks",
+            headers=self._hdr(tokens["view"]),
+            json={
+                "project_id": "p1",
+                "instructions": "do",
+                "scenario": "auto_pass",
+                "mock": False,
+                "agent_role": "backend",
+            },
+        )
+        assert res.status_code == 403
+        # viewer는 budget 변경 불가
+        b = client.put(
+            "/api/budgets",
+            headers=self._hdr(tokens["view"]),
+            json={"scope": "global", "period": "daily", "limit_usd": 5.0},
+        )
+        assert b.status_code == 403
+
+    def test_operator_cannot_admin(self, rbac_setup):
+        client, tokens = rbac_setup
+        # operator는 user CRUD 불가
+        u = client.put(
+            "/api/users",
+            headers=self._hdr(tokens["op"]),
+            json={"user_id": "newbie", "role": "viewer"},
+        )
+        assert u.status_code == 403
+        # operator는 budget 변경 불가(admin 전용)
+        b = client.put(
+            "/api/budgets",
+            headers=self._hdr(tokens["op"]),
+            json={"scope": "global", "period": "daily", "limit_usd": 5.0},
+        )
+        assert b.status_code == 403
+
+    def test_admin_can_mutate_and_audit_records(self, rbac_setup):
+        client, tokens = rbac_setup
+        # admin: budget 생성
+        res = client.put(
+            "/api/budgets",
+            headers=self._hdr(tokens["admin"]),
+            json={"scope": "global", "period": "daily", "limit_usd": 5.0},
+        )
+        assert res.status_code == 200
+        # audit이 기록되었는가
+        audit = client.get(
+            "/api/audit?action=budget.upsert",
+            headers=self._hdr(tokens["admin"]),
+        )
+        assert audit.status_code == 200
+        events = audit.json()
+        assert len(events) >= 1
+        assert events[0]["user_id"] == "alice"
+        assert events[0]["user_role"] == "admin"
+
+    def test_viewer_cannot_read_audit(self, rbac_setup):
+        client, tokens = rbac_setup
+        res = client.get("/api/audit", headers=self._hdr(tokens["view"]))
+        assert res.status_code == 403
+
+    def test_token_issue_and_revoke_round_trip(self, rbac_setup):
+        client, tokens = rbac_setup
+        # admin이 carol에 새 토큰 발급
+        res = client.post(
+            "/api/users/carol/tokens",
+            headers=self._hdr(tokens["admin"]),
+            json={"label": "ci"},
+        )
+        assert res.status_code == 200
+        plaintext = res.json()["token"]
+
+        # 새 토큰으로 viewer 접근 가능
+        check = client.get("/api/me", headers=self._hdr(plaintext))
+        assert check.status_code == 200
+        assert check.json()["role"] == "viewer"
+
+        # revoke 해야 함 — 토큰 ID가 노출되지 않으므로 list로 조회
+        users = client.get("/api/users", headers=self._hdr(tokens["admin"])).json()
+        carol = next(u for u in users if u["user_id"] == "carol")
+        token_id = carol["tokens"][-1]["id"]
+        rev = client.delete(
+            f"/api/users/carol/tokens/{token_id}",
+            headers=self._hdr(tokens["admin"]),
+        )
+        assert rev.status_code == 200
+
+        # 재사용 시 인증 실패
+        again = client.get("/api/me", headers=self._hdr(plaintext))
+        assert again.status_code == 401
+
+
+class TestProjectTimelineEndpoint:
+    @pytest.fixture
+    def seeded_client(self, monkeypatch, tmp_path):
+        from fastapi.testclient import TestClient
+
+        from src.dashboard.app import DashboardApp
+        from src.dashboard.persistence import DashboardStore
+
+        db_path = tmp_path / "dashboard.db"
+        s = DashboardStore(db_path)
+        s.tasks.create(
+            task_id="t1", project_id="p1", agent_role="backend", instructions="x"
+        )
+        s.tasks.create(
+            task_id="t2", project_id="p1", agent_role="frontend", instructions="y"
+        )
+        s.gates.enqueue(
+            handoff_id="g1", project_id="p1", gate_level="L2_HUMAN"
+        )
+        s.tasks.create(
+            task_id="other", project_id="p2", agent_role="docs", instructions="z"
+        )
+        s.close()
+
+        monkeypatch.delenv("ARCHON_DASHBOARD_TOKEN", raising=False)
+        monkeypatch.setenv("ARCHON_DASHBOARD_DB_PATH", str(db_path))
+        return TestClient(DashboardApp().create_app())
+
+    def test_timeline_includes_tasks_and_gates(self, seeded_client):
+        res = seeded_client.get("/api/projects/p1/timeline")
+        assert res.status_code == 200
+        body = res.json()
+        kinds = [item["kind"] for item in body]
+        assert kinds.count("task") == 2
+        assert kinds.count("gate") == 1
+        ids = {item["id"] for item in body}
+        assert "other" not in ids
+
+    def test_timeline_other_project_isolated(self, seeded_client):
+        res = seeded_client.get("/api/projects/p2/timeline")
+        ids = [item["id"] for item in res.json()]
+        assert ids == ["other"]
+
+    def test_memory_endpoint_graceful(self, seeded_client):
+        # 메모리 모듈이 환경에 따라 가용 여부가 다름 — 200 또는 비어있음 응답.
+        res = seeded_client.get("/api/projects/p1/memory?q=test")
+        assert res.status_code == 200
+        body = res.json()
+        assert "available" in body
+        assert "results" in body
+
+
+class TestNotificationRuleEndpoints:
+    @pytest.fixture
+    def admin_client(self, monkeypatch, tmp_path):
+        from fastapi.testclient import TestClient
+
+        from src.dashboard.app import DashboardApp
+
+        monkeypatch.delenv("ARCHON_DASHBOARD_TOKEN", raising=False)
+        monkeypatch.setenv(
+            "ARCHON_DASHBOARD_DB_PATH", str(tmp_path / "dashboard.db")
+        )
+        return TestClient(DashboardApp().create_app())
+
+    def test_upsert_list_delete(self, admin_client):
+        res = admin_client.put(
+            "/api/notification-rules",
+            json={
+                "event": "gate.enqueued",
+                "channel": "webhook",
+                "target": "https://example.test/hook",
+                "label": "ops",
+            },
+        )
+        assert res.status_code == 200
+        rule_id = res.json()["id"]
+
+        listing = admin_client.get("/api/notification-rules").json()
+        assert len(listing) == 1
+
+        rm = admin_client.delete(f"/api/notification-rules/{rule_id}")
+        assert rm.status_code == 200
+        assert admin_client.get("/api/notification-rules").json() == []
+
+    def test_test_endpoint_404(self, admin_client):
+        res = admin_client.post(
+            "/api/notifications/test", json={"rule_id": 9999}
+        )
+        assert res.status_code == 404
+
+
 class TestSpaFallback:
     def test_serves_index_html_when_dist_exists(self, monkeypatch, tmp_path):
         """web/dist/index.html이 있으면 SPA index를 서빙하고 deep-link도 같은 페이지를 반환한다."""
