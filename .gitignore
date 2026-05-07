@@ -6,9 +6,14 @@ gemini.md
 # 실제 설정값 (Private 레포에서 관리)
 config/litellm_config.yaml
 config/ray_config.yaml
+config/agent_config.yaml
 
 # 실제 운영 SOP (Private 레포에서 관리)
 .harness/sop/production/
+
+# Dashboard 영속화 DB (런타임 데이터)
+.harness/dashboard.db
+.harness/dashboard.db-*
 
 # 오케스트레이터·리뷰어 프롬프트 (절대 비공개)
 prompts/
@@ -26,6 +31,9 @@ __pycache__/
 *.pyc
 .venv/
 node_modules/
+.coverage
+htmlcov/
+.pytest_cache/
 
 # IDE
 .idea/

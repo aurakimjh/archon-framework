@@ -138,9 +138,11 @@ except ImportError:
 @pytest.mark.skipif(not _HAS_TESTCLIENT, reason="fastapi not installed")
 class TestRESTAuth:
     def _make_app(self, token: str | None = None):
-        """토큰이 설정된 상태에서 앱을 생성한다."""
+        """토큰이 설정된 상태에서 앱을 생성한다. DB는 in-memory 격리."""
         from src.dashboard.app import DashboardApp
-        env = {"ARCHON_DASHBOARD_TOKEN": token} if token else {}
+        env = {"ARCHON_DASHBOARD_DB_PATH": ":memory:"}
+        if token:
+            env["ARCHON_DASHBOARD_TOKEN"] = token
         with patch.dict(os.environ, env, clear=False):
             if not token:
                 os.environ.pop("ARCHON_DASHBOARD_TOKEN", None)
@@ -203,7 +205,9 @@ class TestRESTAuth:
 class TestWebSocketAuth:
     def _make_app(self, token: str | None = None):
         from src.dashboard.app import DashboardApp
-        env = {"ARCHON_DASHBOARD_TOKEN": token} if token else {}
+        env = {"ARCHON_DASHBOARD_DB_PATH": ":memory:"}
+        if token:
+            env["ARCHON_DASHBOARD_TOKEN"] = token
         with patch.dict(os.environ, env, clear=False):
             if not token:
                 os.environ.pop("ARCHON_DASHBOARD_TOKEN", None)

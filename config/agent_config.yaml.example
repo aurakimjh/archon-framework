@@ -1,0 +1,76 @@
+# 역할별 에이전트 글로벌 설정 예시.
+# 실제 파일(config/agent_config.yaml)은 .gitignore 처리되며,
+# UI(/agents)에서 변경되어 atomic write로 갱신됩니다.
+
+schema_version: "1.0.0"
+
+configs:
+  orchestrator:
+    role: orchestrator
+    enabled: true
+    model: orchestrator                # litellm config의 model_name과 일치해야 함
+    fallback_models: []
+    multi_provider_mode: single        # single | shadow | consensus | strict
+    system_prompt_override: null
+    max_tokens: 4096
+    temperature: 0.2
+
+  reviewer:
+    role: reviewer
+    enabled: true
+    model: reviewer
+    fallback_models: []
+    multi_provider_mode: single
+    system_prompt_override: null
+    max_tokens: 4096
+    temperature: 0.0
+
+  backend:
+    role: backend
+    enabled: true
+    model: backend-agent
+    fallback_models: []
+    multi_provider_mode: single
+    system_prompt_override: null
+    max_tokens: 8192
+    temperature: 0.2
+
+  frontend:
+    role: frontend
+    enabled: true
+    model: frontend-agent
+    fallback_models: []
+    multi_provider_mode: single
+    system_prompt_override: null
+    max_tokens: 8192
+    temperature: 0.2
+
+  tester:
+    role: tester
+    enabled: true
+    model: tester-agent
+    fallback_models: []
+    multi_provider_mode: single
+    system_prompt_override: null
+    max_tokens: 8192
+    temperature: 0.0
+
+  devops:
+    role: devops
+    enabled: true
+    model: devops-agent
+    fallback_models: []
+    multi_provider_mode: single
+    system_prompt_override: null
+    max_tokens: 4096
+    temperature: 0.2
+
+  docs:
+    role: docs
+    enabled: true
+    model: docs-agent
+    fallback_models: []
+    multi_provider_mode: single
+    system_prompt_override: null
+    max_tokens: 4096
+    temperature: 0.3
